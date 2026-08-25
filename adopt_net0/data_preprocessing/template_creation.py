@@ -492,6 +492,41 @@ def initialize_configuration_templates() -> dict:
                 },
             },
         },
+        "profiling": {
+            "profiling_on": {
+                "description": "Determines if resource usage (CPU, memory, disk, "
+                "network) is profiled during the run. If 1, three csv files are "
+                "written to the results folder.",
+                "options": [0, 1],
+                "value": 0,
+            },
+            "sampling_interval": {
+                "description": "Interval in seconds at which resource usage is "
+                "sampled by the background monitor.",
+                "value": 1.0,
+            },
+            "monitor_cpu": {
+                "description": "Determines if CPU metrics are sampled.",
+                "options": [0, 1],
+                "value": 1,
+            },
+            "monitor_memory": {
+                "description": "Determines if memory metrics are sampled.",
+                "options": [0, 1],
+                "value": 1,
+            },
+            "monitor_disk": {
+                "description": "Determines if disk I/O of the process is sampled.",
+                "options": [0, 1],
+                "value": 1,
+            },
+            "monitor_network": {
+                "description": "Determines if network I/O is sampled. Note that "
+                "network counters are system wide and not specific to the process.",
+                "options": [0, 1],
+                "value": 0,
+            },
+        },
     }
 
     return configuration_template

@@ -1,3 +1,4 @@
+import json
 import warnings
 from pathlib import Path
 import pyomo.environ as pyo
@@ -9,6 +10,13 @@ import sys
 import datetime
 
 from .data_management import DataHandle, create_technology_class
+from .diagnostics.profiling import (
+    ResourceMonitor,
+    get_resource_monitor,
+    collect_topology_metrics,
+    collect_model_metrics,
+    collect_solution_metrics,
+)
 from .model_construction import *
 from .result_management.read_results import add_values_to_summary
 from .utilities import (
@@ -39,6 +47,8 @@ class ModelHub:
       pareto point, time stage,...)
     - self.info_pareto: Current pareto point (if used)
     - self.info_solving_algorithms: Information on time aggregation algorithms
+    - self.profiler: Resource monitor (disabled unless switched on in the
+      configuration)
     """
 
     def __init__(self):
@@ -49,6 +59,7 @@ class ModelHub:
         self.model = {}
         self.solution = {}
         self.solver = None
+        self.profiler = ResourceMonitor(enabled=False)
         self.last_solve_info = {}
         self.info_pareto = {}
         self.info_pareto["pareto_point"] = -1
@@ -73,11 +84,46 @@ class ModelHub:
         print(log_msg)
         log.info(log_msg)
         self.data.set_settings(data_path, start_period, end_period)
-        self.data.read_data()
+
+        # The monitor is started before the data is read, so that reading the
+        # data is profiled as well. This requires the configuration to be read
+        # ahead of the data handle.
+        self._initialize_profiler(data_path)
+
+        with self.profiler.phase("read_data"):
+            self.data.read_data()
+
+        self.profiler.add_metadata(**collect_topology_metrics(self.data))
 
         log_msg = "--- Reading in data complete ---"
         print(log_msg)
         log.info(log_msg)
+
+    def _initialize_profiler(self, data_path: Path | str):
+        """
+        Initiates and starts the resource monitor.
+
+        The model configuration is read directly from the data path, as the
+        data handle has not read it yet at this point. If the configuration
+        cannot be read, or if profiling is switched off, a disabled monitor is
+        used and nothing is profiled.
+
+        :param Path, str data_path: Path of folder structure to read data from
+        """
+        try:
+            with open(Path(data_path) / "ConfigModel.json") as json_file:
+                model_config = json.load(json_file)
+        except (OSError, json.JSONDecodeError) as error:
+            log.warning(f"Could not read configuration for profiling: {error}")
+            return
+
+        self.profiler = get_resource_monitor(model_config)
+        self.profiler.start()
+
+        if self.profiler.enabled:
+            log_msg = "Resource profiling is switched on"
+            print(log_msg)
+            log.info(log_msg)
 
     def _perform_preprocessing_checks(self):
         """
@@ -97,7 +143,7 @@ class ModelHub:
                 solver = get_gurobi_parameters(config["solveroptions"])
             elif config["solveroptions"]["solver"]["value"] == "gurobi_persistent":
                 solver = get_gurobi_parameters(config["solveroptions"])
-                self.solver.set_instance(mock_model)
+                solver.set_instance(mock_model)
             elif config["solveroptions"]["solver"]["value"] == "glpk":
                 solver = get_glpk_parameters(config["solveroptions"])
             solver.solve(mock_model)
@@ -224,8 +270,10 @@ class ModelHub:
         print(log_msg)
         log.info(log_msg)
         start = time.time()
+        self.profiler.phase_start("construct_model")
 
-        self._perform_preprocessing_checks()
+        with self.profiler.phase("preprocessing_checks"):
+            self._perform_preprocessing_checks()
 
         # Determine aggregation
         config = self.data.model_config
@@ -368,6 +416,7 @@ class ModelHub:
 
         model.periods = pyo.Block(model.set_periods, rule=init_period_block)
 
+        self.profiler.phase_end("construct_model")
         log_msg = f"Constructing model completed in {str(round(time.time() - start))}s"
         print(log_msg)
         log.info(log_msg)
@@ -380,6 +429,7 @@ class ModelHub:
         print(log_msg)
         log.info(log_msg)
         start = time.time()
+        self.profiler.phase_start("construct_balances")
 
         config = self.data.model_config
         data = self.data
@@ -400,6 +450,7 @@ class ModelHub:
         model = construct_system_cost(model, data)
         model = construct_global_balance(model)
 
+        self.profiler.phase_end("construct_balances")
         log_msg = (
             f"Constructing balances completed in {str(round(time.time() - start))}s"
         )
@@ -414,12 +465,30 @@ class ModelHub:
 
         objective = config["optimization"]["objective"]["value"]
 
-        self._define_solver_settings()
+        # For a persistent solver, this holds the translation of the pyomo
+        # model into the gurobi model, which is a major share of the memory
+        # peak. For a non-persistent solver, the translation happens inside
+        # the solve call instead and cannot be separated from the optimization.
+        with self.profiler.phase("solver_setup"):
+            self._define_solver_settings()
+
+        self.profiler.add_metadata(
+            solve_includes_translation=int(
+                config["solveroptions"]["solver"]["value"] != "gurobi_persistent"
+            )
+        )
 
         if objective == "pareto":
             self._solve_pareto()
         else:
             self._optimize(objective)
+
+        # The profile is written once per solver call. Here it is written a
+        # last time, so that it also covers everything that happened after the
+        # final solver call.
+        self.profiler.stop()
+        if "result_folder_path" in self.last_solve_info:
+            self.profiler.write(self.last_solve_info["result_folder_path"])
 
     def quick_solve(self):
         """
@@ -904,7 +973,8 @@ class ModelHub:
 
         # Scale model
         if config["scaling"]["scaling_on"]["value"] == 1:
-            self.scale_model()
+            with self.profiler.phase("scale_model"):
+                self.scale_model()
             model = self.model["scaled"]
         else:
             model = self.model[self.info_solving_algorithms["aggregation_model"]]
@@ -913,21 +983,29 @@ class ModelHub:
         if config["solveroptions"]["solver"]["value"] == "gurobi_persistent":
             self.solver.set_objective(model.objective)
 
-        if config["solveroptions"]["solver"]["value"] == "glpk":
-            self.solution = self.solver.solve(
-                model,
-                tee=True,
-                logfile=str(Path(result_folder_path / "solver_log.txt")),
-                keepfiles=True,
-            )
-        else:
-            self.solution = self.solver.solve(
-                model,
-                tee=True,
-                warmstart=True,
-                logfile=str(Path(result_folder_path / "solver_log.txt")),
-                keepfiles=True,
-            )
+        with self.profiler.phase("solve"):
+            if config["solveroptions"]["solver"]["value"] == "glpk":
+                self.solution = self.solver.solve(
+                    model,
+                    tee=True,
+                    logfile=str(Path(result_folder_path / "solver_log.txt")),
+                    keepfiles=True,
+                )
+            else:
+                self.solution = self.solver.solve(
+                    model,
+                    tee=True,
+                    warmstart=True,
+                    logfile=str(Path(result_folder_path / "solver_log.txt")),
+                    keepfiles=True,
+                )
+
+        # Model size metrics are read after the solve, as the gurobi model
+        # only exists once the solver has been called
+        self.profiler.add_metadata(**collect_model_metrics(self.solver, model))
+        self.profiler.add_metadata(
+            **collect_solution_metrics(self.solver, self.solution)
+        )
 
         # Determine if results should be written
         if "write_results" in config["reporting"].keys():
@@ -979,7 +1057,17 @@ class ModelHub:
 
         # Write results to path
         if write_results:
-            self.write_results()
+            with self.profiler.phase("write_results"):
+                self.write_results()
+
+        self.profiler.add_metadata(
+            case_name=config["reporting"]["case_name"]["value"],
+            result_folder_path=str(result_folder_path),
+            aggregation_model=self.info_solving_algorithms["aggregation_model"],
+            time_stage=self.info_solving_algorithms["time_stage"],
+            pareto_point=self.info_pareto["pareto_point"],
+        )
+        self.profiler.write(result_folder_path)
 
         log.info("Solving model completed in " + str(round(time.time() - start)) + " s")
 

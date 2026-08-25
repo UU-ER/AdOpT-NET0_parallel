@@ -587,11 +587,46 @@ class Technology(ModelComponent):
                 within=size_domain,
                 bounds=(coeff_ti["size_initial"], b_tec.para_size_max),
             )
-        else:
+        elif b_tec.para_size_min.value == 0:
             # Size is variable
             b_tec.var_size = pyo.Var(
                 within=size_domain,
                 bounds=(b_tec.para_size_min, b_tec.para_size_max),
+            )
+        else:
+            # A minimum size only applies to a technology that is installed.
+            # The size is therefore either zero or between size_min and
+            # size_max, which requires a disjunction. Without it, size_min
+            # would act as a hard lower bound and force the technology to be
+            # installed.
+            b_tec.var_size = pyo.Var(
+                within=size_domain,
+                bounds=(0, b_tec.para_size_max),
+            )
+
+            # The relaxation of technology disjunctions is triggered from
+            # construct_technology, which reads the flag on the technology
+            # itself and not on the block
+            self.big_m_transformation_required = 1
+            s_indicators = range(0, 2)
+
+            def init_installation_size(dis, ind):
+                if ind == 0:  # Technology not installed
+                    dis.const_size_zero = pyo.Constraint(expr=b_tec.var_size == 0)
+                else:  # Technology installed
+                    dis.const_size_bounds = pyo.Constraint(
+                        expr=b_tec.var_size >= b_tec.para_size_min
+                    )
+
+            b_tec.dis_size_installation = gdp.Disjunct(
+                s_indicators, rule=init_installation_size
+            )
+
+            def bind_size_disjunctions(dis):
+                return [b_tec.dis_size_installation[i] for i in s_indicators]
+
+            b_tec.disjunction_size_installation = gdp.Disjunction(
+                rule=bind_size_disjunctions
             )
 
         return b_tec
@@ -766,6 +801,25 @@ class Technology(ModelComponent):
                     + b_tec.para_fix_capex_annual
                     == b_tec.var_capex_aux
                 )
+            elif hasattr(b_tec, "dis_size_installation"):
+                # A minimum size already introduced a disjunction on whether
+                # the technology is installed. The CAPEX constraints are
+                # attached to it, rather than a second disjunction being
+                # created, so that the technology is described by a single
+                # binary.
+                for ind in s_indicators:
+                    dis = b_tec.dis_size_installation[ind]
+                    if ind == 0:  # tech not installed
+                        dis.const_capex_aux = pyo.Constraint(
+                            expr=b_tec.var_capex_aux == 0
+                        )
+                        # The size is already fixed to zero in this disjunct
+                    else:  # tech installed
+                        dis.const_capex_aux = pyo.Constraint(
+                            expr=b_tec.var_size * b_tec.para_unit_capex_annual
+                            + b_tec.para_fix_capex_annual
+                            == b_tec.var_capex_aux
+                        )
             else:
 
                 def init_installation(dis, ind):
