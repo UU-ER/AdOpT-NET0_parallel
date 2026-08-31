@@ -1580,6 +1580,106 @@ def plot_simple_cores(dataset: pd.DataFrame):
     return _save(figure, "simple_cores.png")
 
 
+def plot_cores_lp_versus_mip(dataset: pd.DataFrame):
+    """
+    Why a few runs keep many cores busy and the rest do not.
+
+    A run with no binary variable is a pure linear program, and gurobi solves
+    those with its concurrent method: dual simplex, primal simplex and the
+    barrier at the same time on separate threads, the barrier itself being
+    multithreaded. A run with even one binary is a mixed integer program, its
+    root relaxation is solved by a single threaded dual simplex, and the tree
+    that could be spread over the cores never grows: the median run closes on
+    one node. So the cores follow whether the model has binaries, not how big
+    or how hard it is.
+
+    :param pd.DataFrame dataset: dataset as returned by load_dataset
+    :return: Path of the figure
+    """
+    dataset = add_knob_columns(dataset)
+    usable = _usable(dataset, "parallelism_solve").copy()
+    if usable.empty or "n_binvars" not in usable.columns:
+        print("Skipping cores_lp_vs_mip, the dataset lacks what it needs")
+        return None
+
+    usable["is_lp"] = usable["n_binvars"] == 0
+    available = usable["n_cpus_physical"].dropna()
+    available = float(available.iloc[0]) if len(available) else np.nan
+
+    groups = [
+        (True, "#4c72b0", "pure LP (no binaries)"),
+        (False, "#c44e52", "MIP (at least one binary)"),
+    ]
+
+    figure, axes = plt.subplots(1, 2, figsize=(13.5, 5.4), squeeze=False)
+
+    # Left: against the size, to show that the size is not what decides it
+    axis = axes[0][0]
+    for is_lp, color, label in groups:
+        subset = usable[usable["is_lp"] == is_lp]
+        axis.plot(subset["n_vars"], subset["parallelism_solve"], "o",
+                  color=color, markersize=6, alpha=0.55, mec="none",
+                  label=f"{label}, n={len(subset)}")
+        axis.axhline(subset["parallelism_solve"].median(), color=color,
+                     lw=1.8, ls="--")
+        axis.annotate(
+            f"median {subset['parallelism_solve'].median():.1f}",
+            (usable["n_vars"].max(), subset["parallelism_solve"].median()),
+            textcoords="offset points", xytext=(4, 3), fontsize=9, color=color,
+        )
+    if np.isfinite(available):
+        axis.axhline(available, color="black", lw=1.6)
+        axis.annotate(f"{available:.0f} cores available",
+                      (usable["n_vars"].min(), available),
+                      textcoords="offset points", xytext=(2, 4), fontsize=9.5)
+    axis.set_xscale("log")
+    axis.set_yscale("log")
+    axis.set_xlabel("Number of variables [-]", fontsize=11)
+    axis.set_ylabel("Cores kept busy during the solve [-]", fontsize=11)
+    axis.legend(frameon=True, framealpha=0.9, edgecolor="none", fontsize=9.5,
+                loc="lower right")
+    axis.grid(True, which="major", alpha=0.25)
+    axis.set_axisbelow(True)
+    axis.set_title("It is not the size that decides", fontsize=12)
+
+    # Right: the two populations side by side, which is the whole finding
+    axis = axes[0][1]
+    generator = np.random.default_rng(0)
+    for position, (is_lp, color, label) in enumerate(groups):
+        values = usable.loc[usable["is_lp"] == is_lp, "parallelism_solve"]
+        axis.plot(position + generator.uniform(-0.13, 0.13, len(values)), values,
+                  "o", color=color, markersize=6, alpha=0.5, mec="none")
+        box = axis.boxplot([values], positions=[position], widths=0.5,
+                           showfliers=False, patch_artist=True,
+                           medianprops={"color": "black", "lw": 2})
+        box["boxes"][0].set(facecolor=color, alpha=0.30, lw=0.8)
+        above = (values > 5).sum()
+        axis.annotate(
+            f"median {values.median():.1f}\n{above} of {len(values)} above 5 cores",
+            (position, values.max()), textcoords="offset points", xytext=(0, 12),
+            ha="center", fontsize=10, color=color, fontweight="bold",
+        )
+    axis.set_xticks(range(len(groups)))
+    axis.set_xticklabels(["pure LP\n(no binaries)", "MIP\n(binaries)"], fontsize=11)
+    axis.set_ylabel("Cores kept busy during the solve [-]", fontsize=11)
+    axis.set_ylim(0, usable["parallelism_solve"].max() * 1.45)
+    axis.grid(True, axis="y", alpha=0.25)
+    axis.set_axisbelow(True)
+    axis.set_title(
+        "Binaries switch the parallelism off\n"
+        f"median branch and bound nodes: "
+        f"{usable['gurobi_nodecount'].median():.0f}, so there is no tree to spread",
+        fontsize=12,
+    )
+
+    figure.suptitle(
+        "The runs that use many cores are the ones without binary variables",
+        fontsize=13,
+    )
+    figure.tight_layout(rect=(0, 0, 1, 0.93))
+    return _save(figure, "cores_lp_vs_mip.png")
+
+
 def _full_resolution_label(run: pd.Series):
     """
     Names a full resolution run by the knobs that are not at their default
@@ -1882,6 +1982,7 @@ def main():
     plot_simple_what_costs(dataset)
     plot_simple_predictability(dataset)
     plot_simple_cores(dataset)
+    plot_cores_lp_versus_mip(dataset)
 
 
 if __name__ == "__main__":
