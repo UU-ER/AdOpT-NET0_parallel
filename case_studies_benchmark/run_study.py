@@ -59,6 +59,13 @@ CASE = "four_node"
 # it just does not reach the optimum, and the sweep carries on
 TIME_LIMIT = 2
 
+# Threads the solver may use. 0 is every core of the machine, which is what the
+# first sweep ran with. Setting it makes every run look like a cluster job that
+# asked for that many cores, and it reaches the case name, so a sweep at a
+# different thread count does not skip the runs of the first one as already
+# done. Overridden from the command line with --threads
+THREADS = 0
+
 # Knobs swept in the matrix stage. typicaldays_method is left out on purpose:
 # it multiplies the model by about forty, and at full resolution it has no
 # effect at all, which would produce duplicate runs
@@ -222,6 +229,8 @@ def stage_matrix(dry_run: bool = False):
             *MATRIX_KNOBS,
             "--time-limit",
             str(TIME_LIMIT),
+            "--threads",
+            str(THREADS),
         ],
         dry_run,
     )
@@ -253,6 +262,8 @@ def stage_scaling(dry_run: bool = False):
             *SCALING_KNOBS,
             "--time-limit",
             str(TIME_LIMIT),
+            "--threads",
+            str(THREADS),
         ],
         dry_run,
     )
@@ -282,6 +293,8 @@ def stage_full_resolution(dry_run: bool = False):
                 "0",
                 "--time-limit",
                 str(TIME_LIMIT),
+                "--threads",
+                str(THREADS),
                 *extra,
             ],
             dry_run,
@@ -499,6 +512,8 @@ def main():
     """
     Command line interface of the study
     """
+    global THREADS
+
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(
         "--stages",
@@ -509,17 +524,27 @@ def main():
         help="stages to run, default all of them",
     )
     parser.add_argument(
+        "--threads",
+        type=int,
+        default=THREADS,
+        help="threads the solver may use, 0 for every core of the machine. "
+        "Runs at different thread counts live side by side in the results "
+        "folder, as the thread count is part of the case name",
+    )
+    parser.add_argument(
         "--dry-run",
         action="store_true",
         help="print what would run without running it",
     )
     args = parser.parse_args()
+    THREADS = args.threads
 
     started = time.time()
     if not args.dry_run:
         log("")
         log("#" * 70)
         log("Benchmark study starting")
+        log(f"Solver threads: {THREADS if THREADS else 'all cores'}")
         write_machine_info()
 
     for stage in args.stages:

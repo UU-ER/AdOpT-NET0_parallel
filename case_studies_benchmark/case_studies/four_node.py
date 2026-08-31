@@ -74,6 +74,7 @@ def setup(
     pv: str = "on",
     mipgap: float = 0.01,
     time_limit: float = 2,
+    threads: int = 0,
     solver: str = "gurobi",
     sampling_interval: float = 0.5,
     case_name: str = None,
@@ -105,6 +106,8 @@ def setup(
         so that storage has no reason to exist
     :param float mipgap: MILP gap of the solver
     :param float time_limit: solver time limit in hours
+    :param int threads: number of threads the solver may use, 0 for every core
+        of the machine. This is what a job would ask a cluster for
     :param str solver: solver used
     :param float sampling_interval: sampling interval of the resource monitor
     :param str case_name: name added to the results folder
@@ -127,6 +130,7 @@ def setup(
         typicaldays_method=typicaldays_method,
         mipgap=mipgap,
         time_limit=time_limit,
+        threads=threads,
         solver=solver,
         sampling_interval=sampling_interval,
         case_name=case_name,
@@ -247,6 +251,7 @@ def _write_configuration(
     typicaldays_method: int,
     mipgap: float,
     time_limit: float,
+    threads: int,
     solver: str,
     sampling_interval: float,
     case_name: str,
@@ -281,6 +286,10 @@ def _write_configuration(
     # In hours. Without it a pathological run can hold the queue for the
     # template default of 100 hours
     configuration["solveroptions"]["timelim"]["value"] = time_limit
+    # 0 lets gurobi use every core of the machine, which is the template
+    # default. Setting it is how a run is made to look like a cluster job that
+    # asked for a given number of cores
+    configuration["solveroptions"]["threads"]["value"] = threads
 
     # Pressure levels are what makes the two pipeline networks distinct
     configuration["performance"]["pressure"]["pressure_on"]["value"] = 1

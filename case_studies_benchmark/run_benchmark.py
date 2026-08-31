@@ -83,6 +83,10 @@ def run_case(case: str, **settings):
 DEFAULT_SETTINGS = {
     "mipgap": 0.02,
     "time_limit": 2,
+    # 0 is every core of the machine. A run with a different number of threads
+    # is a different run, so it has to reach the case name, otherwise
+    # already_done would recognise the unrestricted run as this one and skip it
+    "threads": 0,
     "carbon_price": 0,
     "solver": "gurobi",
     "sampling_interval": 0.5,
@@ -114,6 +118,7 @@ KNOB_CODES = {
     "carbon_price": "co2",
     "mipgap": "gap",
     "time_limit": "tl",
+    "threads": "thr",
     "solver": "slv",
 }
 
@@ -295,7 +300,7 @@ def _run_isolated(case: str, typicaldays: int, combination: dict, settings: dict
     for knob, value in combination.items():
         command += ["--set", f"{knob}={value}"]
     for key, value in settings.items():
-        if key in ["mipgap", "solver", "sampling_interval", "time_limit"]:
+        if key in ["mipgap", "solver", "sampling_interval", "time_limit", "threads"]:
             command += [f"--{key.replace('_', '-')}", str(value)]
         else:
             command += ["--set", f"{key}={value}"]
@@ -387,6 +392,7 @@ def main():
     settings = {
         "mipgap": args.mipgap,
         "time_limit": args.time_limit,
+        "threads": args.threads,
         "solver": args.solver,
         "sampling_interval": args.sampling_interval,
     }
@@ -439,6 +445,15 @@ def _add_case_arguments(parser, sweep: bool = False):
         default=2,
         help="solver time limit in hours, so that a pathological run cannot "
         "hold an unattended sweep for the template default of 100 hours",
+    )
+    parser.add_argument(
+        "--threads",
+        type=int,
+        default=0,
+        help="number of threads the solver may use, 0 for every core of the "
+        "machine. This is the number a cluster job would ask for, and it ends "
+        "up in the case name so that sweeps at different thread counts do not "
+        "recognise each other as already done",
     )
     parser.add_argument("--carbon-price", dest="carbon_price", type=float, default=0)
     parser.add_argument("--solver", default="gurobi")
