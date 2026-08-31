@@ -1,43 +1,44 @@
 # Benchmark study
 
-Written 2026-08-25 17:06.
+Written 2026-08-27 01:02.
 
 ## Machine
 
-- hostname: UU200005
-- platform: Windows-11-10.0.26200-SP0
-- python: 3.12.7
-- cpus_physical: 12
-- cpus_logical: 14
-- memory_total_gb: 15.5
-- started: 2026-08-25T17:05:42
+- hostname: aspenrds
+- platform: Windows-2016Server-10.0.14393-SP0
+- python: 3.12.2
+- cpus_physical: 48
+- cpus_logical: 48
+- memory_total_gb: 878.9
+- started: 2026-08-26T10:13:11
 - gurobi: 13.0.0
 
 ## Runs
 
-- 27 runs in total, 21 of `four_node`
-- model size from 12,818 to 106,931 variables
-- wall time from 5.6 s to 526.6 s
-- peak memory from 353 MB to 2094 MB
+- 147 runs in total, 147 of `four_node`
+- model size from 13,116 to 2,961,285 variables
+- wall time from 23.1 s to 7482.7 s
+- peak memory from 280 MB to 14072 MB
 
 ### Termination
 
-- optimal: 21
+- optimal: 144
+- maxTimeLimit: 3
 
 ### Slowest runs
 
 | run | variables | binaries | gurobi [s] | B&B nodes | peak memory [MB] |
 |---|---|---|---|---|---|
-| `four_node_td4_pf_df_cxfix_sm250` | 76,173 | 48 | 497.6 | 35 | 1792 |
-| `four_node_td4_bp1_pf_df_cxfix_sm250` | 78,477 | 2,352 | 378.5 | 1 | 2094 |
-| `four_node_td4_pf_df_cxfix` | 76,173 | 48 | 67.2 | 1 | 1213 |
-| `four_node_td4_pf_df` | 76,125 | 0 | 38.8 | 0 | 976 |
-| `four_node_td4_bp1_pf_df_cxfix_sm250_sp1` | 79,437 | 3,312 | 30.6 | 1 | 1423 |
-| `four_node_td4_df_pv0` | 75,539 | 0 | 28.4 | 0 | 979 |
-| `four_node_td4_pf_df_pv0` | 75,539 | 0 | 28.1 | 0 | 979 |
-| `four_node_td4_pf_pv0` | 75,539 | 0 | 26.1 | 0 | 1012 |
-| `four_node_td2_pf_df_pv0` | 59,843 | 0 | 24.1 | 0 | 730 |
-| `four_node_td4_pv0` | 75,539 | 0 | 23.5 | 0 | 970 |
+| `four_node_td0_pf_df` | 2,961,285 | 48 | 7201.2 | 1 | 14058 |
+| `four_node_td0_pv0` | 2,908,715 | 48 | 7201.1 | 1 | 14072 |
+| `four_node_td32_bp1_sm250` | 318,381 | 18,480 | 7201.1 | 11 | 6788 |
+| `four_node_td32_sm250` | 299,949 | 48 | 4539.6 | 28 | 6374 |
+| `four_node_td32_bp1` | 318,381 | 18,480 | 3049.8 | 1 | 7013 |
+| `four_node_td16_bp1_sm250` | 181,293 | 9,264 | 2144.2 | 20 | 5128 |
+| `four_node_td16_sm250` | 172,077 | 48 | 1509.5 | 22 | 4994 |
+| `four_node_td0_pv0_st0` | 2,295,410 | 48 | 1415.7 | 1 | 9683 |
+| `four_node_td4_bp1_df_cxfix_sm250` | 78,477 | 2,352 | 283.7 | 11 | 2110 |
+| `four_node_td16_bp1` | 181,293 | 9,264 | 283.3 | 1 | 4962 |
 
 ## Figures
 
