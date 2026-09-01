@@ -29,6 +29,8 @@ import sys
 import traceback
 from pathlib import Path
 
+import psutil
+
 # The package is imported from the repository, so that the benchmark runs
 # against the working tree and not against an installed version
 REPO_ROOT = Path(__file__).parents[1]
@@ -65,6 +67,11 @@ def run_case(case: str, **settings):
     input_data_path = INPUT_DATA_PATH / case
     case_name = settings.pop("case_name", None) or _build_case_name(case, settings)
 
+    # Pinning is a property of the process and not of the model, so it is
+    # applied here and never passed on to the case study. It has to happen
+    # before the solver starts, as the solver threads inherit the mask
+    _pin_to_cores(settings.pop("affinity_cores", 0))
+
     log_msg = f"--- Benchmark run: {case_name} ---"
     print(log_msg)
     log.info(log_msg)
@@ -78,6 +85,37 @@ def run_case(case: str, **settings):
     return model
 
 
+def _pin_to_cores(n_cores: int):
+    """
+    Restricts the process, and every thread it starts, to the first n cores.
+
+    ``Threads`` caps how wide the solver spreads its work but says nothing
+    about *which* cores it lands on, so a run at n threads is free to be
+    scheduled across every socket of the machine. Pinning to n cores that sit
+    next to each other is the same amount of parallelism on one socket, which
+    is what separates a cross-socket memory effect from the cost of the
+    parallelism itself.
+
+    :param int n_cores: number of logical cores to pin to, 0 to leave the
+        process free
+    """
+    if not n_cores:
+        return
+
+    process = psutil.Process()
+    available = process.cpu_affinity()
+
+    if n_cores > len(available):
+        raise ValueError(
+            f"Asked to pin to {n_cores} cores but only {len(available)} are "
+            "available to this process"
+        )
+
+    cores = available[:n_cores]
+    process.cpu_affinity(cores)
+    print(f"[AFFINITY] pinned to {len(cores)} cores: {cores}")
+
+
 # Settings that are left out of the case name, as they end up as columns of
 # the dataset anyway and would only make the results folder name unreadable
 DEFAULT_SETTINGS = {
@@ -87,6 +125,9 @@ DEFAULT_SETTINGS = {
     # is a different run, so it has to reach the case name, otherwise
     # already_done would recognise the unrestricted run as this one and skip it
     "threads": 0,
+    # 0 leaves the process free to use every core. Like threads, a pinned run
+    # is a different run and has to be told apart in the case name
+    "affinity_cores": 0,
     "carbon_price": 0,
     "solver": "gurobi",
     "sampling_interval": 0.5,
@@ -119,6 +160,7 @@ KNOB_CODES = {
     "mipgap": "gap",
     "time_limit": "tl",
     "threads": "thr",
+    "affinity_cores": "aff",
     "solver": "slv",
 }
 
@@ -300,7 +342,14 @@ def _run_isolated(case: str, typicaldays: int, combination: dict, settings: dict
     for knob, value in combination.items():
         command += ["--set", f"{knob}={value}"]
     for key, value in settings.items():
-        if key in ["mipgap", "solver", "sampling_interval", "time_limit", "threads"]:
+        if key in [
+            "mipgap",
+            "solver",
+            "sampling_interval",
+            "time_limit",
+            "threads",
+            "affinity_cores",
+        ]:
             command += [f"--{key.replace('_', '-')}", str(value)]
         else:
             command += ["--set", f"{key}={value}"]
@@ -393,6 +442,7 @@ def main():
         "mipgap": args.mipgap,
         "time_limit": args.time_limit,
         "threads": args.threads,
+        "affinity_cores": args.affinity_cores,
         "solver": args.solver,
         "sampling_interval": args.sampling_interval,
     }
@@ -454,6 +504,17 @@ def _add_case_arguments(parser, sweep: bool = False):
         "machine. This is the number a cluster job would ask for, and it ends "
         "up in the case name so that sweeps at different thread counts do not "
         "recognise each other as already done",
+    )
+    parser.add_argument(
+        "--affinity-cores",
+        dest="affinity_cores",
+        type=int,
+        default=0,
+        help="pin the process to the first N logical cores, 0 to leave it "
+        "free. Combined with an equal --threads this keeps the amount of "
+        "parallelism the same while confining it to cores that sit together, "
+        "which is what tells a cross-socket effect apart from the cost of the "
+        "parallelism itself",
     )
     parser.add_argument("--carbon-price", dest="carbon_price", type=float, default=0)
     parser.add_argument("--solver", default="gurobi")

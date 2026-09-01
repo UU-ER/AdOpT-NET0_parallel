@@ -20,13 +20,17 @@ Stages:
               largest end of the scale
 4. report     collects every run into one dataset, draws the figures and
               writes a summary
+5. threads    a few configurations run again at a ladder of thread counts, to
+              find out why a restricted solver is the faster one. Not part of
+              the study proper, so it is not in the default set of stages
 
 Examples::
 
     python run_study.py                     # the whole study
     python run_study.py --stages 0 1        # only the sizes and the matrix
     python run_study.py --stages 4          # only redo the figures and report
-    python run_study.py --dry-run           # print what would run
+    python run_study.py --stages 5          # only the thread ladder
+    python run_study.py --stages 5 --dry-run
 """
 
 import argparse
@@ -105,6 +109,60 @@ RESOURCES = [
     "gurobi_runtime_s",
     "parallelism_solve",
 ]
+
+# --- Stage 5, the thread ladder -------------------------------------------
+#
+# The 4 thread sweep showed that a restricted solver is not slower and on the
+# heavy MIPs is faster, and that the whole effect sits in the cost of a single
+# simplex iteration rather than in the number of iterations. Three things could
+# produce that signature and the paired sweep cannot tell them apart: memory
+# bandwidth, per-iteration synchronisation, and cores spread across sockets.
+#
+# Running the same model along a ladder of thread counts separates the first
+# two from the third. A cost per iteration that climbs smoothly with the thread
+# count is bandwidth or synchronisation; a step where the ladder crosses a
+# socket boundary is the memory topology. The pinned runs below settle it: same
+# number of threads, but confined to cores that sit together.
+#
+# Configurations are named the way the case name builds them, so
+# four_node_td32_bp1 is typicaldays 32 with bidirectional_precise on and every
+# other knob at its default.
+THREAD_LADDER_CONFIGS = [
+    {
+        # ~180 s at 48 threads and x0.35 at 4, the strongest effect among the
+        # cheap runs, so it can afford the full ladder
+        "typicaldays": 4,
+        "knobs": {
+            "bidirectional_precise": 1,
+            "electricity_price": "fluctuating",
+            "pipeline_capex": "fixed_plus_linear",
+            "pipeline_size_min": 250,
+        },
+        "threads": [1, 2, 4, 8, 12, 16, 24, 32, 48],
+    },
+    {
+        # ~280 s at 48 threads and x1.05 at 4, a configuration the thread count
+        # did not move. It is the control: whatever the ladder shows here is
+        # not the effect being chased
+        "typicaldays": 16,
+        "knobs": {"bidirectional_precise": 1},
+        "threads": [1, 2, 4, 8, 12, 16, 24, 32, 48],
+    },
+    {
+        # 3050 s at 48 threads against 732 s at 4, with the search path
+        # provably unchanged. The run the whole question comes from, and the
+        # expensive one, so it gets a coarser ladder
+        "typicaldays": 32,
+        "knobs": {"bidirectional_precise": 1},
+        "threads": [1, 4, 16, 48],
+    },
+]
+
+# Thread counts that are also run pinned to an equal number of cores. Kept to
+# the two cheaper configurations, and to counts high enough that an unpinned
+# run has a reason to spread across sockets
+THREAD_LADDER_PINNED = [16, 24]
+THREAD_LADDER_PINNED_CONFIGS = [0, 1]
 
 
 def log(message: str):
@@ -299,6 +357,97 @@ def stage_full_resolution(dry_run: bool = False):
             ],
             dry_run,
         )
+    return ok
+
+
+def _thread_ladder_runs():
+    """
+    Builds the list of runs of the thread ladder, cheapest configuration first
+
+    :return: list of (typicaldays, knobs, threads, affinity_cores) tuples
+    """
+    runs = []
+
+    for index, config in enumerate(THREAD_LADDER_CONFIGS):
+        for threads in config["threads"]:
+            runs.append((config["typicaldays"], config["knobs"], threads, 0))
+
+        if index not in THREAD_LADDER_PINNED_CONFIGS:
+            continue
+
+        # The pinned run only means something next to the free run at the same
+        # thread count, so it is never asked for on its own
+        for threads in THREAD_LADDER_PINNED:
+            if threads in config["threads"]:
+                runs.append((config["typicaldays"], config["knobs"], threads, threads))
+
+    return runs
+
+
+def stage_thread_ladder(dry_run: bool = False):
+    """
+    Runs a few configurations along a ladder of thread counts.
+
+    Every run is skipped if it is already on disk, so the stage can be
+    interrupted and started again. A failing run does not stop the ladder.
+
+    :param bool dry_run: if True, the commands are only printed
+    :return: True if every run that was attempted succeeded
+    """
+    from run_benchmark import already_done
+
+    runs = _thread_ladder_runs()
+    log(
+        f"=== Stage 5: thread ladder, {len(THREAD_LADDER_CONFIGS)} configurations, "
+        f"{len(runs)} runs ==="
+    )
+
+    ok = True
+    skipped = 0
+
+    for number, (typicaldays, knobs, threads, affinity) in enumerate(runs, start=1):
+        settings = {
+            "mipgap": 0.02,
+            "time_limit": TIME_LIMIT,
+            "threads": threads,
+            "affinity_cores": affinity,
+            "solver": "gurobi",
+            "sampling_interval": 0.5,
+        }
+
+        if not dry_run and already_done(CASE, typicaldays, knobs, settings):
+            skipped += 1
+            log(
+                f"[LADDER] run {number}/{len(runs)}: td{typicaldays}, "
+                f"{threads} threads, already done, skipped"
+            )
+            continue
+
+        command = [
+            sys.executable,
+            "run_benchmark.py",
+            "run",
+            "--case",
+            CASE,
+            "--typicaldays",
+            str(typicaldays),
+            "--time-limit",
+            str(TIME_LIMIT),
+            "--threads",
+            str(threads),
+        ]
+        if affinity:
+            command += ["--affinity-cores", str(affinity)]
+        for knob, value in knobs.items():
+            command += ["--set", f"{knob}={value}"]
+
+        log(f"[LADDER] run {number}/{len(runs)}: td{typicaldays}, {threads} threads")
+        ok &= run(command, dry_run)
+
+    if not dry_run:
+        log(f"[LADDER] {skipped} of {len(runs)} runs were already done")
+        run([sys.executable, "run_benchmark.py", "collect"], dry_run)
+
     return ok
 
 
@@ -505,7 +654,13 @@ STAGES = {
     2: stage_scaling,
     3: stage_full_resolution,
     4: stage_report,
+    5: stage_thread_ladder,
 }
+
+# The thread ladder answers a question about the machine rather than about the
+# case study, and it re-runs configurations the study already covers, so asking
+# for the study does not ask for it
+DEFAULT_STAGES = [0, 1, 2, 3, 4]
 
 
 def main():
@@ -520,8 +675,9 @@ def main():
         type=int,
         nargs="+",
         choices=sorted(STAGES),
-        default=sorted(STAGES),
-        help="stages to run, default all of them",
+        default=DEFAULT_STAGES,
+        help="stages to run, default every stage of the study proper. Stage 5, "
+        "the thread ladder, has to be asked for by name",
     )
     parser.add_argument(
         "--threads",
