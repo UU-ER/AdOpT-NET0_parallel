@@ -223,9 +223,13 @@ def plot_cores(dataset: pd.DataFrame, output: Path):
     # whatever they are given, while the columns between them hold only a
     # handful of large ladder runs. The line would then dip at 4 and at 48
     # purely because of the mix of model sizes
-    counts = sorted(dataset["requested"].unique())
-    spans = dataset.groupby("config")["requested"].nunique()
-    comparable = dataset[dataset["config"].isin(spans[spans == len(counts)].index)]
+    # Pinned runs are a different condition, the process confined to a subset
+    # of the cores, so they have no place in a line about how many cores the
+    # solver takes when it is free to take any
+    free = dataset[dataset["aff"] == 0]
+    counts = sorted(free["requested"].unique())
+    spans = free.groupby("config")["requested"].nunique()
+    comparable = free[free["config"].isin(spans[spans == len(counts)].index)]
     middle = comparable.groupby("requested")["parallelism_solve"].median()
     axis.plot(
         middle.index,
