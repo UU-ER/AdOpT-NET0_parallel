@@ -10,10 +10,20 @@ them apart:
 - synchronisation, paid once per iteration and growing with the thread count
 - cores spread across sockets, which makes part of the memory remote
 
-The ladder separates them. Cost per iteration that climbs smoothly with the
-thread count is bandwidth or synchronisation. A step where the ladder crosses a
-socket boundary is the memory topology, and the pinned runs confirm it: the
-same number of threads confined to cores that sit together.
+It answered none of them. Three configurations were run a second time at four
+threads with nothing asked for that differed, and the two runs came out up to a
+factor 5.9 apart, differing in the number of non-zeros and in the optimal
+objective. ADOPT rebuilds the model on every run, because the typical-day
+clustering is an unseeded k-means, so two runs of one configuration are two
+different problems and the ladder is measuring that rather than the threads.
+
+The control is in the same dataset: full resolution does no clustering, its
+models come out identical to every digit, and there the thread count moves the
+runtime by 3 %.
+
+So this script draws two figures. The ladder itself, each curve against the
+spread of the runs that were repeated, and the repeats on their own next to the
+full resolution control.
 
 Examples::
 
@@ -31,22 +41,13 @@ matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
+from matplotlib.patches import Patch
 
 BASE = Path(__file__).parent
 DATASET_FILE = BASE / "benchmark_dataset.csv"
 FIGURES_PATH = BASE / "figures"
 
-# One colour per configuration, in the order they come out of the dataset
-COLOURS = ["#3b6ea5", "#d1731f", "#4a8c5f", "#8c4a7d", "#a5433b"]
-GREY = "#8a8a8a"
-
-# What is plotted against the thread count, and whether lower is better
-PANELS = [
-    ("ms_cpu_per_iter", "CPU time per simplex iteration [ms]", True),
-    ("ms_wall_per_iter", "Wall time per simplex iteration [ms]", True),
-    ("gurobi_runtime_s", "Gurobi runtime [s]", True),
-    ("parallelism_solve", "Cores busy during the solve", False),
-]
+RED, BLUE, GREEN, DARK = "#c0392b", "#3b6ea5", "#4a8c5f", "#2b2b2b"
 
 
 def load(dataset_file: Path, min_thread_counts: int = 3):
@@ -139,112 +140,349 @@ def repeats(ladder: pd.DataFrame):
 
 def plot_ladder(ladder: pd.DataFrame, output: Path):
     """
-    Draws the four panels of the ladder, one line per configuration
+    Draws the runtime of each configuration against the thread count.
+
+    One panel per configuration, because they sit decades apart and sharing an
+    axis makes all three unreadable. Behind each curve is the spread between
+    the runs of that configuration that were repeated at one thread count. That
+    band is the smallest difference the ladder could resolve, and a curve that
+    does not leave it says nothing about threads.
 
     :param ladder: DataFrame returned by load
     :param Path output: png file to write
     """
-    configs = list(dict.fromkeys(ladder["config"]))
+    configs = sorted(
+        dict.fromkeys(ladder["config"]),
+        key=lambda name: ladder[ladder["config"] == name]["gurobi_runtime_s"].median(),
+    )
+    ticks = sorted(ladder["threads"].unique())
 
-    figure, axes = plt.subplots(2, 2, figsize=(11.5, 8.4))
+    figure, axes = plt.subplots(
+        len(configs), 1, figsize=(9.6, 3.2 * len(configs)), sharex=True, squeeze=False
+    )
+    axes = axes.ravel()
 
-    for axis, (column, label, lower_is_better) in zip(axes.ravel(), PANELS):
-        for number, config in enumerate(configs):
-            colour = COLOURS[number % len(COLOURS)]
-            runs = ladder[ladder["config"] == config]
+    for axis, config in zip(axes, configs):
+        runs = ladder[ladder["config"] == config]
+        free = runs[~runs["pinned"]]
+        finished = free[~free["censored"]]
 
-            # Every run is drawn, and the line goes through the median at each
-            # thread count. Where a configuration was run twice at the same
-            # count the two markers show the noise directly, and a line through
-            # one of them would hide it
-            free = runs[~runs["pinned"] & ~runs["censored"]]
-            axis.scatter(free["threads"], free[column], s=26, color=colour, zorder=3)
-            middle = free.groupby("threads")[column].median()
-            axis.plot(
-                middle.index,
-                middle.values,
-                lw=1.6,
-                color=colour,
-                label=config.replace("four_node_", ""),
+        band = _noise_band(free)
+        if band:
+            low, high = band
+            axis.axhspan(low, high, color=RED, alpha=0.13, zorder=0)
+            for edge in band:
+                axis.axhline(edge, color=RED, lw=0.9, ls="--", alpha=0.55, zorder=1)
+            axis.annotate(
+                "run-to-run noise:\nsame configuration,\nsame thread count",
+                xy=(ticks[-1], np.sqrt(low * high)),
+                xytext=(-6, 0),
+                textcoords="offset points",
+                ha="right",
+                va="center",
+                fontsize=8,
+                color=RED,
             )
 
-            # Censored runs are drawn hollow, so that a curve that flattens
-            # because of the time limit cannot be read as a real plateau
-            stopped = runs[~runs["pinned"] & runs["censored"]]
-            axis.scatter(
-                stopped["threads"],
-                stopped[column],
-                s=44,
-                facecolors="none",
-                edgecolors=colour,
-                linewidths=1.4,
-                zorder=4,
-            )
+        axis.scatter(
+            finished["threads"],
+            finished["gurobi_runtime_s"],
+            s=46,
+            color=BLUE,
+            edgecolors="white",
+            linewidths=1,
+            zorder=4,
+        )
+        middle = finished.groupby("threads")["gurobi_runtime_s"].median()
+        axis.plot(middle.index, middle.values, lw=1.7, color=BLUE, zorder=3)
 
-            pinned = runs[runs["pinned"] & ~runs["censored"]]
-            axis.scatter(
-                pinned["threads"],
-                pinned[column],
-                s=70,
-                marker="*",
-                color=colour,
-                edgecolors="k",
-                linewidths=0.5,
-                zorder=5,
-            )
+        # Censored runs are drawn hollow, so that a curve flattening against the
+        # time limit cannot be read as a real plateau
+        stopped = free[free["censored"]]
+        axis.scatter(
+            stopped["threads"],
+            stopped["gurobi_runtime_s"],
+            s=60,
+            facecolors="none",
+            edgecolors=BLUE,
+            linewidths=1.5,
+            zorder=4,
+        )
+
+        pinned = runs[runs["pinned"]]
+        axis.scatter(
+            pinned["threads"],
+            pinned["gurobi_runtime_s"],
+            s=120,
+            marker="*",
+            color="white",
+            edgecolors=DARK,
+            linewidths=1.1,
+            zorder=5,
+        )
 
         axis.set_xscale("log", base=2)
-        axis.set_xticks(sorted(ladder["threads"].unique()))
+        axis.set_xticks(ticks)
         axis.get_xaxis().set_major_formatter(matplotlib.ticker.ScalarFormatter())
-        axis.set_xlabel("solver threads")
-        axis.set_ylabel(label)
-        axis.grid(alpha=0.25, which="both", lw=0.5)
-        if lower_is_better:
-            axis.set_yscale("log")
-        axis.set_title(label, fontsize=10)
+        axis.set_yscale("log")
+        axis.grid(alpha=0.22, which="both", lw=0.5)
+        axis.set_ylabel("gurobi runtime [s]")
 
-    handles, labels = axes[0, 0].get_legend_handles_labels()
-    handles += [
-        plt.Line2D(
-            [],
-            [],
-            marker="*",
-            ms=11,
-            color=GREY,
-            ls="none",
-            label="pinned to an equal number of cores",
-        ),
-        plt.Line2D(
-            [],
-            [],
-            marker="o",
-            ms=7,
-            mfc="none",
-            mec=GREY,
-            ls="none",
-            label="hit the time limit, not a real value",
-        ),
-    ]
-    labels += [handle.get_label() for handle in handles[len(labels) :]]
+        title = config.replace("four_node_", "")
+        if len(finished) > 1:
+            span = (
+                finished["gurobi_runtime_s"].max() / finished["gurobi_runtime_s"].min()
+            )
+            title += f"   -   the whole ladder spans x{span:.1f}"
+            if band:
+                title += f", the noise alone is x{band[1] / band[0]:.1f}"
+        axis.set_title(title, fontsize=10.5, loc="left", pad=6)
 
-    figure.legend(
-        handles,
-        labels,
+    axes[-1].set_xlabel("solver threads")
+    axes[0].legend(
+        handles=[
+            plt.Line2D([], [], marker="o", ms=7, color=BLUE, lw=1.7, label="one run"),
+            plt.Line2D(
+                [],
+                [],
+                marker="o",
+                ms=8,
+                mfc="none",
+                mec=BLUE,
+                ls="none",
+                label="hit the time limit",
+            ),
+            plt.Line2D(
+                [],
+                [],
+                marker="*",
+                ms=12,
+                mfc="white",
+                mec=DARK,
+                ls="none",
+                label="pinned to an equal number of cores",
+            ),
+            Patch(fc=RED, alpha=0.13, ec=RED, ls="--", label="run-to-run noise"),
+        ],
         fontsize=8.5,
         frameon=False,
-        loc="lower center",
         ncol=2,
-        bbox_to_anchor=(0.5, -0.01),
+        loc="upper left",
     )
+
     figure.suptitle(
-        "Cost of solver work against the thread count\n"
-        "a smooth climb is bandwidth or synchronisation, a step is a socket "
-        "boundary",
-        fontsize=11,
+        "The thread ladder cannot separate the thread count from the noise\n"
+        "and the band is only two runs, so the true noise is wider",
+        fontsize=12,
+        y=0.997,
     )
-    figure.tight_layout(rect=(0, 0.07, 1, 1))
+    figure.tight_layout(rect=(0, 0, 1, 1 - 0.075 / len(configs) * 3))
     figure.savefig(output, dpi=160)
     print(f"Wrote {output}")
+
+
+def _noise_band(free: pd.DataFrame):
+    """
+    Returns the widest spread between runs repeated at one thread count
+
+    :param free: the unpinned runs of one configuration
+    :return: (fastest, slowest) tuple, or None if nothing was repeated
+    """
+    widest = None
+    for _, runs in free.groupby("threads"):
+        if len(runs) < 2:
+            continue
+        low = runs["gurobi_runtime_s"].min()
+        high = runs["gurobi_runtime_s"].max()
+        if widest is None or high / low > widest[1] / widest[0]:
+            widest = (low, high)
+
+    return widest
+
+
+def plot_noise(ladder: pd.DataFrame, dataset_file: Path, output: Path):
+    """
+    Draws the repeated runs against a run whose model is provably identical.
+
+    Runs with typical days rebuild the model with an unseeded k-means, so two
+    of them are not the same problem. Full resolution does no clustering, so
+    those runs are the control, and the difference between the two is the whole
+    finding.
+
+    :param ladder: DataFrame returned by load
+    :param Path dataset_file: the dataset, re-read to reach the control runs
+    :param Path output: png file to write
+    """
+    rows = []
+    for (config, _), runs in ladder[~ladder["pinned"]].groupby(["config", "threads"]):
+        if len(runs) < 2:
+            continue
+        rows.append(_pair(config, runs, clustered=True))
+
+    dataset = pd.read_csv(dataset_file)
+    dataset["stem"] = dataset["case_name"].str.replace(r"_thr\d+$", "", regex=True)
+    for stem, runs in dataset[dataset["typicaldays_n"] == 0].groupby("stem"):
+        if len(runs) > 1 and (runs["termination_condition"] == "optimal").all():
+            rows.append(_pair(stem, runs, clustered=False))
+
+    if not rows:
+        print("Nothing was run twice, so there is no noise to show")
+        return
+
+    pairs = pd.DataFrame(rows).sort_values("ratio")
+
+    figure, axes = plt.subplots(
+        1,
+        2,
+        figsize=(12.6, 1.1 * len(pairs) + 2.4),
+        gridspec_kw={"width_ratios": [1.75, 1]},
+    )
+    positions = np.arange(len(pairs))
+
+    left = axes[0]
+    for position, pair in enumerate(pairs.itertuples()):
+        colour = RED if pair.clustered else GREEN
+        left.plot(
+            [pair.low, pair.high],
+            [position, position],
+            lw=3.4,
+            color=colour,
+            alpha=0.55,
+            solid_capstyle="round",
+            zorder=2,
+        )
+        left.scatter(
+            [pair.low, pair.high],
+            [position, position],
+            s=68,
+            color=colour,
+            edgecolors="white",
+            linewidths=1.2,
+            zorder=3,
+        )
+        left.annotate(
+            f"x{pair.ratio:.2f}",
+            xy=(pair.high, position),
+            xytext=(9, 0),
+            textcoords="offset points",
+            va="center",
+            fontsize=10.5,
+            fontweight="bold",
+            color=colour,
+        )
+
+    left.set_yticks(positions)
+    left.set_yticklabels(
+        [
+            f"{pair.label}\n{'clustered' if pair.clustered else 'full resolution, no clustering'}"
+            for pair in pairs.itertuples()
+        ],
+        fontsize=9,
+    )
+    left.set_xscale("log")
+    left.set_ylim(-0.65, len(pairs) - 0.35)
+    left.set_xlabel("gurobi runtime [s], log scale")
+    left.set_title(
+        "Two runs of the same configuration,\nnothing asked for that differs",
+        fontsize=11,
+        pad=10,
+    )
+    left.grid(alpha=0.25, axis="x", which="both", lw=0.5)
+    left.legend(
+        handles=[
+            plt.Line2D(
+                [],
+                [],
+                color=RED,
+                lw=3.4,
+                alpha=0.55,
+                marker="o",
+                ms=8,
+                markerfacecolor=RED,
+                label="typical days: k-means rebuilds the model",
+            ),
+            plt.Line2D(
+                [],
+                [],
+                color=GREEN,
+                lw=3.4,
+                alpha=0.55,
+                marker="o",
+                ms=8,
+                markerfacecolor=GREEN,
+                label="full resolution: identical model, the control",
+            ),
+        ],
+        fontsize=8.5,
+        frameon=False,
+        loc="upper left",
+    )
+
+    right = axes[1]
+    right.barh(
+        positions,
+        pairs["objective_pct"],
+        height=0.55,
+        color=[RED if pair.clustered else GREEN for pair in pairs.itertuples()],
+        alpha=0.75,
+        edgecolor="k",
+        linewidth=0.5,
+    )
+    for position, pair in enumerate(pairs.itertuples()):
+        identical = pair.objective_pct == 0
+        right.annotate(
+            "identical\nto every digit" if identical else f"{pair.objective_pct:.2f} %",
+            xy=(pair.objective_pct, position),
+            xytext=(7, 0),
+            textcoords="offset points",
+            va="center",
+            fontsize=9,
+            color=GREEN if identical else DARK,
+            fontweight="bold" if identical else "normal",
+        )
+    right.set_yticks(positions)
+    right.set_yticklabels([])
+    right.set_ylim(-0.65, len(pairs) - 0.35)
+    right.set_xlim(0, max(pairs["objective_pct"].max() * 1.35, 0.1))
+    right.set_xlabel("difference in the optimal objective [%]")
+    right.set_title("They are not the same problem", fontsize=11, pad=10)
+    right.grid(alpha=0.25, axis="x", lw=0.5)
+
+    figure.suptitle(
+        "The benchmark cannot resolve anything below a factor 5: "
+        "ADOPT rebuilds the model on every run",
+        fontsize=12.5,
+        y=1.02,
+    )
+    figure.tight_layout()
+    figure.savefig(output, dpi=160, bbox_inches="tight")
+    print(f"Wrote {output}")
+
+
+def _pair(label: str, runs: pd.DataFrame, clustered: bool):
+    """
+    Summarises two runs of one configuration into a row of the noise figure
+
+    :param str label: name of the configuration
+    :param runs: the runs, two or more
+    :param bool clustered: False for a full resolution run, which is the control
+    :return: dict with the runtimes, their ratio and the objective difference
+    """
+    ordered = runs.sort_values("gurobi_runtime_s")
+    low = ordered["gurobi_runtime_s"].iloc[0]
+    high = ordered["gurobi_runtime_s"].iloc[-1]
+    objectives = ordered["gurobi_objval"]
+
+    return {
+        "label": label.replace("four_node_", "").replace("_thr4", ""),
+        "low": low,
+        "high": high,
+        "ratio": high / low,
+        "objective_pct": 100
+        * abs(objectives.max() - objectives.min())
+        / abs(objectives.iloc[0]),
+        "clustered": clustered,
+    }
 
 
 def report(ladder: pd.DataFrame):
@@ -345,6 +583,9 @@ def main():
 
     args.output.parent.mkdir(parents=True, exist_ok=True)
     plot_ladder(ladder, args.output)
+    plot_noise(
+        ladder, args.dataset, args.output.with_name("four_node_run_to_run_noise.png")
+    )
     report(ladder)
 
 
