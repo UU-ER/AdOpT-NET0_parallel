@@ -56,7 +56,10 @@ BASE = Path(__file__).parent
 DATASET_FILE = BASE / "benchmark_dataset.csv"
 FIGURES_PATH = BASE / "figures"
 
-RED, BLUE, GREEN, DARK = "#c0392b", "#3b6ea5", "#4a8c5f", "#2b2b2b"
+RED, BLUE, GREEN, DARK, GREY = "#c0392b", "#3b6ea5", "#4a8c5f", "#2b2b2b", "#9a9a9a"
+
+# One colour per configuration in the scaling figure
+COLOURS = ["#3b6ea5", "#d1731f", "#4a8c5f", "#8c4a7d", "#a5433b"]
 
 
 def load(dataset_file: Path, min_thread_counts: int = 3):
@@ -287,6 +290,146 @@ def plot_ladder(ladder: pd.DataFrame, output: Path):
     )
     figure.tight_layout(rect=(0, 0, 1, 1 - 0.075 / len(configs) * 3))
     figure.savefig(output, dpi=160)
+    print(f"Wrote {output}")
+
+
+SCALED = [
+    ("gurobi_runtime_s", "Runtime", "how long it took", "chaotic: no usable trend"),
+    (
+        "ms_cpu_per_iter",
+        "CPU per simplex iteration",
+        "what a unit of work costs",
+        "roughly doubles",
+    ),
+    ("rss_peak_os_mb", "Peak memory", "what the solver held", "roughly quadruples"),
+]
+
+
+def plot_what_scales(ladder: pd.DataFrame, output: Path):
+    """
+    Draws what the thread count does move, next to what it does not.
+
+    Runtime is the product of how much work the search happened to do, which is
+    chaotic, and what a unit of that work costs, which is physical. Dividing the
+    chaotic factor out leaves two quantities that do rise cleanly with the
+    thread count and that the noise does not swamp.
+
+    Runs that closed at the root are marked, since for those the tree cannot be
+    the explanation and whatever is left is the thread count.
+
+    :param ladder: DataFrame returned by load
+    :param Path output: png file to write
+    """
+    runs = ladder[~ladder["pinned"] & ~ladder["censored"]]
+    configs = sorted(
+        dict.fromkeys(runs["config"]),
+        key=lambda name: runs[runs["config"] == name]["gurobi_runtime_s"].median(),
+    )
+    ticks = sorted(runs["threads"].unique())
+
+    figure, axes = plt.subplots(1, len(SCALED), figsize=(14.5, 5.0), sharex=True)
+
+    for axis, (column, title, subtitle, verdict) in zip(axes, SCALED):
+        for number, config in enumerate(configs):
+            group = runs[runs["config"] == config].sort_values("threads")
+            # Each configuration is normalised by its own cheapest thread count,
+            # which is not always 1: a run that hit the time limit is out
+            base = group[group["threads"] == group["threads"].min()][column].median()
+            scaled = group[column] / base
+
+            at_root = group["gurobi_nodecount"] == 1
+            axis.scatter(
+                group["threads"][~at_root],
+                scaled[~at_root],
+                s=40,
+                color=COLOURS[number % len(COLOURS)],
+                edgecolors="white",
+                linewidths=0.9,
+                zorder=3,
+            )
+            axis.scatter(
+                group["threads"][at_root],
+                scaled[at_root],
+                s=64,
+                marker="D",
+                color=COLOURS[number % len(COLOURS)],
+                edgecolors="white",
+                linewidths=0.9,
+                zorder=4,
+            )
+            middle = scaled.groupby(group["threads"]).median()
+            axis.plot(
+                middle.index,
+                middle.values,
+                lw=1.7,
+                color=COLOURS[number % len(COLOURS)],
+            )
+
+        axis.axhline(1, color=DARK, lw=1, ls="--", zorder=1)
+        axis.set_xscale("log", base=2)
+        axis.set_yscale("log")
+        axis.set_xticks(ticks)
+        axis.get_xaxis().set_major_formatter(matplotlib.ticker.ScalarFormatter())
+        axis.set_yticks([0.25, 0.5, 1, 2, 4, 8])
+        axis.set_yticklabels(["0.25x", "0.5x", "1x", "2x", "4x", "8x"])
+        axis.set_ylim(0.16, 9)
+        axis.set_xlabel("solver threads")
+        axis.grid(alpha=0.22, which="both", lw=0.5)
+        axis.set_title(f"{title}\n{subtitle}", fontsize=11)
+        axis.annotate(
+            verdict,
+            xy=(0.5, 0.965),
+            xycoords="axes fraction",
+            ha="center",
+            va="top",
+            fontsize=9.5,
+            fontweight="bold",
+            color=DARK,
+        )
+
+    axes[0].set_ylabel(
+        "relative to the same configuration\nat its fewest measured threads"
+    )
+
+    handles = [
+        plt.Line2D(
+            [],
+            [],
+            marker="o",
+            ms=7,
+            color=COLOURS[number % len(COLOURS)],
+            lw=1.7,
+            label=config.replace("four_node_", ""),
+        )
+        for number, config in enumerate(configs)
+    ]
+    handles.append(
+        plt.Line2D(
+            [],
+            [],
+            marker="D",
+            ms=7,
+            color=GREY,
+            ls="none",
+            label="closed at the root (1 node): the search cannot explain it",
+        )
+    )
+    figure.legend(
+        handles=handles,
+        fontsize=9,
+        frameon=False,
+        ncol=len(handles),
+        loc="lower center",
+        bbox_to_anchor=(0.5, -0.02),
+    )
+    figure.suptitle(
+        "Same configuration, more threads: runtime tells you nothing,\n"
+        "memory and cost per unit of work tell you a lot",
+        fontsize=12.5,
+        y=1.0,
+    )
+    figure.tight_layout(rect=(0, 0.07, 1, 0.98))
+    figure.savefig(output, dpi=160, bbox_inches="tight")
     print(f"Wrote {output}")
 
 
@@ -608,6 +751,7 @@ def main():
     plot_noise(
         ladder, args.dataset, args.output.with_name("four_node_run_to_run_noise.png")
     )
+    plot_what_scales(ladder, args.output.with_name("four_node_threads_what_scales.png"))
     report(ladder)
 
 
