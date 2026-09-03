@@ -49,15 +49,19 @@ PANELS = [
 ]
 
 
-def load(dataset_file: Path):
+def load(dataset_file: Path, min_thread_counts: int = 3):
     """
     Reads the dataset and picks out the runs of the thread ladder.
 
     A ladder run is recognised by its case name carrying a ``thr`` code, and
     the configuration it belongs to is what is left of the name once the thread
-    and the affinity codes are taken off.
+    and the affinity codes are taken off. A whole sweep can be run at a single
+    thread count, and that is not a ladder, so a configuration only counts once
+    it has been measured at several of them.
 
     :param Path dataset_file: benchmark_dataset.csv to read
+    :param int min_thread_counts: how many distinct thread counts a
+        configuration needs before it is treated as a ladder
     :return: pandas DataFrame of the ladder runs, with the thread count, the
         pinning and the configuration split out of the case name
     """
@@ -81,6 +85,12 @@ def load(dataset_file: Path):
         .str.replace(r"_aff\d+", "", regex=True)
     )
 
+    measured_at = ladder.groupby("config")["threads"].transform("nunique")
+    ladder = ladder[measured_at >= min_thread_counts].copy()
+
+    if ladder.empty:
+        return ladder
+
     # A run that hit the time limit has a runtime set by the limit and not by
     # the machine, so it cannot sit on a cost curve
     ladder["censored"] = ladder["termination_condition"] != "optimal"
@@ -91,6 +101,40 @@ def load(dataset_file: Path):
     ladder["ms_wall_per_iter"] = 1000 * ladder["gurobi_runtime_s"] / iterations
 
     return ladder.sort_values(["config", "pinned", "threads"])
+
+
+def repeats(ladder: pd.DataFrame):
+    """
+    Finds configurations run more than once at the same thread count.
+
+    Two runs that agree on every setting should be the same measurement. Where
+    they are not, the spread between them is the noise floor, and no effect
+    smaller than it can be read off the ladder.
+
+    :param ladder: DataFrame returned by load
+    :return: DataFrame with one row per repeated configuration and thread count
+    """
+    rows = []
+    grouped = ladder[~ladder["pinned"]].groupby(["config", "threads"])
+
+    for (config, threads), runs in grouped:
+        if len(runs) < 2:
+            continue
+        runtimes = runs["gurobi_runtime_s"]
+        rows.append(
+            {
+                "config": config.replace("four_node_", ""),
+                "threads": threads,
+                "runs": len(runs),
+                "fastest_s": runtimes.min(),
+                "slowest_s": runtimes.max(),
+                "spread": runtimes.max() / runtimes.min(),
+                "n_nnz_unique": runs["n_nnz"].nunique(),
+                "objval_unique": runs["gurobi_objval"].round(0).nunique(),
+            }
+        )
+
+    return pd.DataFrame(rows)
 
 
 def plot_ladder(ladder: pd.DataFrame, output: Path):
@@ -109,12 +153,16 @@ def plot_ladder(ladder: pd.DataFrame, output: Path):
             colour = COLOURS[number % len(COLOURS)]
             runs = ladder[ladder["config"] == config]
 
+            # Every run is drawn, and the line goes through the median at each
+            # thread count. Where a configuration was run twice at the same
+            # count the two markers show the noise directly, and a line through
+            # one of them would hide it
             free = runs[~runs["pinned"] & ~runs["censored"]]
+            axis.scatter(free["threads"], free[column], s=26, color=colour, zorder=3)
+            middle = free.groupby("threads")[column].median()
             axis.plot(
-                free["threads"],
-                free[column],
-                marker="o",
-                ms=5,
+                middle.index,
+                middle.values,
                 lw=1.6,
                 color=colour,
                 label=config.replace("four_node_", ""),
@@ -221,6 +269,15 @@ def report(ladder: pd.DataFrame):
     print("\n=== every ladder run ===")
     print(ladder[columns].to_string(index=False, float_format=lambda v: f"{v:.3f}"))
 
+    repeated = repeats(ladder)
+    if not repeated.empty:
+        print("\n=== the noise floor: same configuration, same thread count ===")
+        print("These runs differ in nothing that was asked for, so the spread")
+        print("between them is the smallest effect the ladder can resolve. A")
+        print("differing n_nnz or objective means the model itself was rebuilt")
+        print("differently and the two runs are not the same problem.\n")
+        print(repeated.to_string(index=False, float_format=lambda v: f"{v:.3f}"))
+
     pinned = ladder[ladder["pinned"]]
     if pinned.empty:
         return
@@ -238,7 +295,9 @@ def report(ladder: pd.DataFrame):
         ]
         if free.empty:
             continue
-        free = free.iloc[0]
+        # Against the median, so that a repeated free run does not decide the
+        # comparison by which of its two values happens to come first
+        free = free.loc[free["gurobi_runtime_s"].sort_values().index[len(free) // 2]]
         rows.append(
             {
                 "config": run["config"].replace("four_node_", ""),
@@ -266,9 +325,18 @@ def main():
     parser.add_argument(
         "--output", type=Path, default=FIGURES_PATH / "four_node_thread_ladder.png"
     )
+    parser.add_argument(
+        "--min-thread-counts",
+        dest="min_thread_counts",
+        type=int,
+        default=3,
+        help="how many distinct thread counts a configuration needs before it "
+        "is treated as a ladder, so that a whole sweep run at one thread count "
+        "is not mistaken for one",
+    )
     args = parser.parse_args()
 
-    ladder = load(args.dataset)
+    ladder = load(args.dataset, min_thread_counts=args.min_thread_counts)
     if ladder.empty:
         print(f"No runs with a thread count in the case name found in {args.dataset}")
         return
