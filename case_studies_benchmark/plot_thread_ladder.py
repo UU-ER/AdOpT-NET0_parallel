@@ -12,10 +12,19 @@ them apart:
 
 It answered none of them. Three configurations were run a second time at four
 threads with nothing asked for that differed, and the two runs came out up to a
-factor 5.9 apart, differing in the number of non-zeros and in the optimal
-objective. ADOPT rebuilds the model on every run, because the typical-day
-clustering is an unseeded k-means, so two runs of one configuration are two
-different problems and the ladder is measuring that rather than the threads.
+factor 5.9 apart.
+
+The cause is not that the models are far apart. The typical-day clustering is an
+unseeded k-means, so it does come out slightly differently each time, but only
+slightly: the two matrices differ by **0.0003 to 0.003 % of their non-zeros**,
+and in one of the three pairs by a single non-zero. That is enough. Branch and
+bound is chaotic under a perturbation of any size, so a coefficient that moves
+flips a branching decision and the tree diverges. This is ordinary MIP
+performance variability rather than anything peculiar to ADOPT.
+
+The objective is not used as evidence here. The runs stop at a 2 % MIP gap, so
+two of them can report objectives a percent apart while solving exactly the same
+problem.
 
 The control is in the same dataset: full resolution does no clustering, its
 models come out identical to every digit, and there the thread count moves the
@@ -304,10 +313,15 @@ def plot_noise(ladder: pd.DataFrame, dataset_file: Path, output: Path):
     """
     Draws the repeated runs against a run whose model is provably identical.
 
-    Runs with typical days rebuild the model with an unseeded k-means, so two
-    of them are not the same problem. Full resolution does no clustering, so
-    those runs are the control, and the difference between the two is the whole
-    finding.
+    Runs with typical days rebuild the model with an unseeded k-means. The
+    clustering is nearly stable, so the two models are all but the same, and
+    that is the point: a difference of a few thousandths of a percent in the
+    matrix moves the runtime by a factor of several. Full resolution does no
+    clustering at all and is the control.
+
+    The objective is deliberately not used as evidence. The runs stop at a 2 %
+    MIP gap, so two of them can report objectives that far apart while solving
+    exactly the same problem.
 
     :param ladder: DataFrame returned by load
     :param Path dataset_file: the dataset, re-read to reach the control runs
@@ -387,6 +401,7 @@ def plot_noise(ladder: pd.DataFrame, dataset_file: Path, output: Path):
         fontsize=11,
         pad=10,
     )
+    left.set_xlim(pairs["low"].min() * 0.6, pairs["high"].max() * 2.6)
     left.grid(alpha=0.25, axis="x", which="both", lw=0.5)
     left.legend(
         handles=[
@@ -421,7 +436,7 @@ def plot_noise(ladder: pd.DataFrame, dataset_file: Path, output: Path):
     right = axes[1]
     right.barh(
         positions,
-        pairs["objective_pct"],
+        pairs["model_pct"],
         height=0.55,
         color=[RED if pair.clustered else GREEN for pair in pairs.itertuples()],
         alpha=0.75,
@@ -429,10 +444,10 @@ def plot_noise(ladder: pd.DataFrame, dataset_file: Path, output: Path):
         linewidth=0.5,
     )
     for position, pair in enumerate(pairs.itertuples()):
-        identical = pair.objective_pct == 0
+        identical = pair.model_pct == 0
         right.annotate(
-            "identical\nto every digit" if identical else f"{pair.objective_pct:.2f} %",
-            xy=(pair.objective_pct, position),
+            "the same matrix" if identical else f"{pair.model_pct:.4f} %",
+            xy=(pair.model_pct, position),
             xytext=(7, 0),
             textcoords="offset points",
             va="center",
@@ -443,16 +458,17 @@ def plot_noise(ladder: pd.DataFrame, dataset_file: Path, output: Path):
     right.set_yticks(positions)
     right.set_yticklabels([])
     right.set_ylim(-0.65, len(pairs) - 0.35)
-    right.set_xlim(0, max(pairs["objective_pct"].max() * 1.35, 0.1))
-    right.set_xlabel("difference in the optimal objective [%]")
-    right.set_title("They are not the same problem", fontsize=11, pad=10)
+    right.set_xlim(0, max(pairs["model_pct"].max() * 1.9, 0.001))
+    right.set_xlabel("difference in the number of non-zeros [%]")
+    right.set_title("and the two models are all but identical", fontsize=11, pad=10)
     right.grid(alpha=0.25, axis="x", lw=0.5)
 
     figure.suptitle(
-        "The benchmark cannot resolve anything below a factor 5: "
-        "ADOPT rebuilds the model on every run",
-        fontsize=12.5,
-        y=1.02,
+        "A few thousandths of a percent of the matrix moves the runtime by a "
+        "factor of several:\nMIP solve time is chaotic, so the benchmark "
+        "cannot resolve anything below it",
+        fontsize=12,
+        y=1.04,
     )
     figure.tight_layout()
     figure.savefig(output, dpi=160, bbox_inches="tight")
@@ -473,11 +489,17 @@ def _pair(label: str, runs: pd.DataFrame, clustered: bool):
     high = ordered["gurobi_runtime_s"].iloc[-1]
     objectives = ordered["gurobi_objval"]
 
+    nonzeros = ordered["n_nnz"]
+
     return {
         "label": label.replace("four_node_", "").replace("_thr4", ""),
         "low": low,
         "high": high,
         "ratio": high / low,
+        # How far apart the two matrices are. The objective is not used: the
+        # runs stop at a 2 % MIP gap, so it can differ by that much on one and
+        # the same problem
+        "model_pct": 100 * (nonzeros.max() - nonzeros.min()) / nonzeros.min(),
         "objective_pct": 100
         * abs(objectives.max() - objectives.min())
         / abs(objectives.iloc[0]),
