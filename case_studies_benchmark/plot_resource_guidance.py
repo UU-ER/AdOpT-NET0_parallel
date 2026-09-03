@@ -216,11 +216,16 @@ def plot_cores(dataset: pd.DataFrame, output: Path):
             label=f"{kind}, {len(group)} runs",
         )
 
-    # The median has to be taken over configurations that exist at every thread
-    # count, otherwise it compares 150 runs of every size at 4 and 48 threads
-    # against a handful of large ones in between
+    # The median has to be taken over configurations that were run at every
+    # thread count, so that each point on the line is the same model. Taken
+    # over everything instead, the 4 and 48 columns hold both full sweeps, 150
+    # runs of every size including the many small ones that use one core
+    # whatever they are given, while the columns between them hold only a
+    # handful of large ladder runs. The line would then dip at 4 and at 48
+    # purely because of the mix of model sizes
+    counts = sorted(dataset["requested"].unique())
     spans = dataset.groupby("config")["requested"].nunique()
-    comparable = dataset[dataset["config"].isin(spans[spans >= 5].index)]
+    comparable = dataset[dataset["config"].isin(spans[spans == len(counts)].index)]
     middle = comparable.groupby("requested")["parallelism_solve"].median()
     axis.plot(
         middle.index,
@@ -230,8 +235,8 @@ def plot_cores(dataset: pd.DataFrame, output: Path):
         marker="o",
         ms=6,
         zorder=5,
-        label=f"median over the {comparable['config'].nunique()} configurations\n"
-        "measured at every thread count",
+        label=f"median over the {comparable['config'].nunique()} configurations run\n"
+        f"at all {len(counts)} thread counts, so every point is the same model",
     )
 
     ticks = sorted(dataset["requested"].unique())
