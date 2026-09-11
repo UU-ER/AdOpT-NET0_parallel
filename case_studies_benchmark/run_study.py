@@ -29,6 +29,11 @@ Stages:
               default at all
 7. gurobi a2  the same factorial on two more configurations, which says whether
               the answer depends on the complexity of the model
+8. cuts a1    the options that steer the cut loop at the root node, crossed
+              with the thread count. That loop is where about 80 % of the
+              solve goes on this model family, so these options have far more
+              time in scope than the root algorithm does
+9. cuts a2    the same on two more configurations
 
 Examples::
 
@@ -181,6 +186,26 @@ THREAD_LADDER_CONFIGS = [
 # threads = 1 is not decoration. It is the only level where barrier and
 # concurrent cannot win through parallelism, so an option that still helps
 # there is helping algorithmically, and the gain is not the threads'.
+
+# Stage 8. The smoke test of 2026-09-11 on td4 showed where the time of this
+# model family actually goes: presolve 0.9 s, the root relaxation 19 s, and
+# then a hundred seconds of cut rounds at the root node, with the tree closing
+# after eighteen nodes. So roughly 80 % of the solve is the cut loop at the
+# root, not the root LP and not the search.
+#
+# Two things follow. The options that steer the cut loop have far more time in
+# scope than Method has, and an almost empty tree has nothing to parallelise,
+# which is the likely reason the solver was only ever seen using 2.1 cores of
+# 48. This stage crosses the cut loop options with the thread count.
+#
+# lpwarmstart is in here because the adopt template forces it to 0 while the
+# gurobi default is -1, and a model that re-solves its root LP once per cut
+# round is exactly where that costs something.
+GUROBI_CUT_LEVELS = [0, -1, 3]
+GUROBI_MIPFOCUS_LEVELS = [0, 3]
+GUROBI_LPWARMSTART_LEVELS = [0, -1]
+GUROBI_CUT_THREAD_LEVELS = [4, 48]
+
 GUROBI_THREAD_LEVELS = [1, 4, 16, 48]
 
 # -1 auto, 1 dual simplex (serial), 2 barrier (parallel), 3 concurrent
@@ -581,6 +606,112 @@ def stage_gurobi_threads(dry_run: bool = False, part: str = "a1"):
     return ok
 
 
+def _gurobi_cut_runs(part: str):
+    """
+    Builds the cells of the cut loop by thread count factorial
+
+    :param str part: which set of configurations, "a1" or "a2"
+    :return: list of (typicaldays, knobs, options, threads) tuples
+    """
+    runs = []
+    for config in GUROBI_CONFIGS[part]:
+        for cuts in GUROBI_CUT_LEVELS:
+            for mipfocus in GUROBI_MIPFOCUS_LEVELS:
+                for lpwarmstart in GUROBI_LPWARMSTART_LEVELS:
+                    for threads in GUROBI_CUT_THREAD_LEVELS:
+                        runs.append(
+                            (
+                                config["typicaldays"],
+                                config["knobs"],
+                                {
+                                    "cuts": cuts,
+                                    "mipfocus": mipfocus,
+                                    "lpwarmstart": lpwarmstart,
+                                },
+                                threads,
+                            )
+                        )
+    return runs
+
+
+def stage_gurobi_cuts(dry_run: bool = False, part: str = "a1"):
+    """
+    Crosses the options that steer the root cut loop with the thread count.
+
+    Every run is skipped if it is already on disk, so the stage can be
+    interrupted and started again. A failing run does not stop the factorial.
+
+    A cell at cuts = 0 can be much slower than the rest, since the cut loop is
+    what closes this model, and can reach the time limit. That is not a failure
+    and the run still carries a valid resource measurement, with
+    termination_condition saying what happened.
+
+    :param bool dry_run: if True, the commands are only printed
+    :param str part: which set of configurations, "a1" or "a2"
+    :return: True if every run that was attempted succeeded
+    """
+    from run_benchmark import already_done
+
+    runs = _gurobi_cut_runs(part)
+    log(
+        f"=== Stage 8{part}: root cut loop by threads, "
+        f"{len(GUROBI_CONFIGS[part])} configurations, {len(runs)} runs ==="
+    )
+
+    ok = True
+    skipped = 0
+
+    for number, (typicaldays, knobs, options, threads) in enumerate(runs, start=1):
+        settings = {
+            "mipgap": 0.02,
+            "time_limit": TIME_LIMIT,
+            "threads": threads,
+            "affinity_cores": 0,
+            "solver": "gurobi",
+            "sampling_interval": 0.5,
+            **options,
+        }
+        spelled = ", ".join(f"{name} {value}" for name, value in options.items())
+
+        if not dry_run and already_done(CASE, typicaldays, knobs, settings):
+            skipped += 1
+            log(
+                f"[CUTS] run {number}/{len(runs)}: td{typicaldays}, {spelled}, "
+                f"{threads} threads, already done, skipped"
+            )
+            continue
+
+        command = [
+            sys.executable,
+            "run_benchmark.py",
+            "run",
+            "--case",
+            CASE,
+            "--typicaldays",
+            str(typicaldays),
+            "--time-limit",
+            str(TIME_LIMIT),
+            "--threads",
+            str(threads),
+        ]
+        for name, value in options.items():
+            command += ["--set", f"{name}={value}"]
+        for knob, value in knobs.items():
+            command += ["--set", f"{knob}={value}"]
+
+        log(
+            f"[CUTS] run {number}/{len(runs)}: td{typicaldays}, {spelled}, "
+            f"{threads} threads"
+        )
+        ok &= run(command, dry_run)
+
+    if not dry_run:
+        log(f"[CUTS] {skipped} of {len(runs)} runs were already done")
+        run([sys.executable, "run_benchmark.py", "collect"], dry_run)
+
+    return ok
+
+
 def stage_report(dry_run: bool = False):
     """
     Collects the runs, draws the figures and writes the summary
@@ -787,6 +918,8 @@ STAGES = {
     5: stage_thread_ladder,
     6: lambda dry_run=False: stage_gurobi_threads(dry_run, part="a1"),
     7: lambda dry_run=False: stage_gurobi_threads(dry_run, part="a2"),
+    8: lambda dry_run=False: stage_gurobi_cuts(dry_run, part="a1"),
+    9: lambda dry_run=False: stage_gurobi_cuts(dry_run, part="a2"),
 }
 
 # The thread ladder answers a question about the machine rather than about the
