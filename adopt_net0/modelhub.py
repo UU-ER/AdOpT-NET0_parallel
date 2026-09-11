@@ -1004,7 +1004,11 @@ class ModelHub:
         # only exists once the solver has been called
         self.profiler.add_metadata(**collect_model_metrics(self.solver, model))
         self.profiler.add_metadata(
-            **collect_solution_metrics(self.solver, self.solution)
+            **collect_solution_metrics(
+                self.solver,
+                self.solution,
+                log_path=result_folder_path / "solver_log.txt",
+            )
         )
 
         # Determine if results should be written

@@ -2,6 +2,7 @@ import csv
 import logging
 import os
 import platform
+import re
 import socket
 import threading
 import time
@@ -11,9 +12,33 @@ from pathlib import Path
 import pandas as pd
 import psutil
 
+from ..utilities import GUROBI_PARAMETERS
+
 log = logging.getLogger(__name__)
 
 MB = 1024.0 * 1024.0
+
+# Lines of the gurobi log that carry numbers the solver does not expose as a
+# model attribute. The root relaxation is the one that matters most: on a MIP
+# it runs single threaded and is where a large share of the time goes, so a
+# solver option that acts on the root cannot be judged from the total runtime.
+#
+# "Root relaxation: objective -1.2e+05, 12345 iterations, 3.45 seconds" - the
+# objective can also read "cutoff" or "infeasible", so it is skipped over
+SOLVER_LOG_PATTERNS = {
+    "root_relaxation_iters": re.compile(
+        r"^Root relaxation:.*?, (\d+) iterations", re.MULTILINE
+    ),
+    "root_relaxation_s": re.compile(
+        r"^Root relaxation:.*?, \d+ iterations, ([\d.eE+-]+) seconds", re.MULTILINE
+    ),
+    "presolve_s": re.compile(r"^Presolve time: ([\d.eE+-]+)s", re.MULTILINE),
+    "presolved_rows": re.compile(r"^Presolved: (\d+) rows", re.MULTILINE),
+    "presolved_cols": re.compile(r"^Presolved: \d+ rows, (\d+) columns", re.MULTILINE),
+    "presolved_nnz": re.compile(
+        r"^Presolved: \d+ rows, \d+ columns, (\d+) nonzeros", re.MULTILINE
+    ),
+}
 
 
 class ResourceMonitor:
@@ -588,6 +613,17 @@ def collect_topology_metrics(data):
         metrics["solver"] = config["solveroptions"]["solver"]["value"]
         metrics["gurobi_threads"] = config["solveroptions"]["threads"]["value"]
         metrics["mipgap"] = config["solveroptions"]["mipgap"]["value"]
+
+        # Every solver option adopt hands to gurobi becomes a column, so that
+        # two runs that differ only in one of them can be told apart in the
+        # dataset. An option a configuration does not carry was left at the
+        # gurobi default, which is what the empty value means
+        for option in GUROBI_PARAMETERS:
+            if option in ("threads", "mipgap"):
+                continue
+            metrics[f"gurobi_{option}"] = (
+                config["solveroptions"].get(option, {}).get("value", "")
+            )
     except (AttributeError, KeyError, TypeError) as error:
         log.warning(f"Could not collect all topology metrics: {error}")
 
@@ -637,12 +673,52 @@ def collect_model_metrics(solver, model=None):
     return metrics
 
 
-def collect_solution_metrics(solver, solution):
+def collect_solver_log_metrics(log_path):
+    """
+    Reads the numbers gurobi only writes to its log.
+
+    The root relaxation and the presolve are phases of the solve that the
+    solver does not expose as attributes, but a solver option that acts on one
+    of them cannot be judged from the total runtime. The presolved size is the
+    direct measurement of what the presolve did, and unlike a runtime it does
+    not move between two runs of the same model.
+
+    :param log_path: path of the solver log, or None
+    :return: dict with the metrics found in the log, empty values for the rest
+    """
+    metrics = {column: "" for column in SOLVER_LOG_PATTERNS}
+
+    if log_path is None:
+        return metrics
+
+    log_path = Path(log_path)
+    if not log_path.is_file():
+        return metrics
+
+    try:
+        content = log_path.read_text(errors="replace")
+    except OSError as error:
+        log.warning(f"Could not read the solver log: {error}")
+        return metrics
+
+    for column, pattern in SOLVER_LOG_PATTERNS.items():
+        # A log can hold more than one solve, and the model the other metrics
+        # are read from is the last one, so the last match is the one to keep
+        matches = pattern.findall(content)
+        if matches:
+            metrics[column] = float(matches[-1])
+
+    return metrics
+
+
+def collect_solution_metrics(solver, solution, log_path=None):
     """
     Collects metrics describing how hard the problem was to solve
 
     :param solver: pyomo solver object
     :param solution: pyomo results object
+    :param log_path: path of the solver log, read for the phases of the solve
+        that gurobi only reports there
     :return: dict with solution metrics
     """
     metrics = {}
@@ -669,5 +745,7 @@ def collect_solution_metrics(solver, solution):
                 metrics[column] = getattr(gurobi_model, attribute)
             except (AttributeError, RuntimeError):
                 metrics[column] = ""
+
+    metrics.update(collect_solver_log_metrics(log_path))
 
     return metrics

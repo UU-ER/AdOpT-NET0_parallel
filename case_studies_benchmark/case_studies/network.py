@@ -18,6 +18,7 @@ import pandas as pd
 
 import adopt_net0 as adopt
 import adopt_net0.data_preprocessing as dp
+from adopt_net0.utilities import GUROBI_PARAMETERS
 
 NAME = "network"
 
@@ -32,6 +33,20 @@ def setup(
     threads: int = 0,
     carbon_price: float = 0,
     solver: str = "gurobi",
+    method: int = -1,
+    crossover: int = -1,
+    barhomogeneous: int = -1,
+    scaleflag: int = -1,
+    concurrentmethod: int = -1,
+    nodemethod: int = -1,
+    presolve: int = -1,
+    cuts: int = -1,
+    mipfocus: int = 0,
+    heuristics: float = 0.05,
+    norelheurtime: float = 0,
+    numericfocus: int = 0,
+    lpwarmstart: int = 0,
+    branchdir: int = 0,
     sampling_interval: float = 0.5,
     case_name: str = None,
 ):
@@ -53,6 +68,22 @@ def setup(
         of the machine. This is what a job would ask a cluster for
     :param float carbon_price: carbon price in EUR/t
     :param str solver: solver used
+    :param int method: gurobi Method, the algorithm of the root relaxation.
+        The root of a MIP runs single threaded and holds a large share of the
+        time, so it is the option most likely to interact with the thread count
+    :param int crossover: gurobi Crossover, 0 skips it after the barrier
+    :param int barhomogeneous: gurobi BarHomogeneous
+    :param int scaleflag: gurobi ScaleFlag
+    :param int concurrentmethod: gurobi ConcurrentMethod
+    :param int nodemethod: gurobi NodeMethod, the algorithm at the nodes
+    :param int presolve: gurobi Presolve
+    :param int cuts: gurobi Cuts
+    :param int mipfocus: gurobi MIPFocus
+    :param float heuristics: gurobi Heuristics
+    :param float norelheurtime: gurobi NoRelHeurTime in seconds
+    :param int numericfocus: gurobi NumericFocus
+    :param int lpwarmstart: gurobi LPWarmStart
+    :param int branchdir: gurobi BranchDir
     :param float sampling_interval: sampling interval of the resource monitor
     :param str case_name: name added to the results folder
     """
@@ -76,6 +107,22 @@ def setup(
         time_limit=time_limit,
         threads=threads,
         solver=solver,
+        gurobi_options={
+            "method": method,
+            "crossover": crossover,
+            "barhomogeneous": barhomogeneous,
+            "scaleflag": scaleflag,
+            "concurrentmethod": concurrentmethod,
+            "nodemethod": nodemethod,
+            "presolve": presolve,
+            "cuts": cuts,
+            "mipfocus": mipfocus,
+            "heuristics": heuristics,
+            "norelheurtime": norelheurtime,
+            "numericfocus": numericfocus,
+            "lpwarmstart": lpwarmstart,
+            "branchdir": branchdir,
+        },
         sampling_interval=sampling_interval,
         case_name=case_name,
     )
@@ -117,6 +164,7 @@ def _write_configuration(
     time_limit: float,
     threads: int,
     solver: str,
+    gurobi_options: dict,
     sampling_interval: float,
     case_name: str,
 ):
@@ -131,6 +179,9 @@ def _write_configuration(
     :param float time_limit: solver time limit in hours
     :param int threads: number of threads the solver may use, 0 for all of them
     :param str solver: solver used
+    :param dict gurobi_options: solver options passed to the configuration
+        untouched. The keys are those of ConfigModel.json, which
+        GUROBI_PARAMETERS in adopt_net0/utilities.py maps to the gurobi names
     :param float sampling_interval: sampling interval of the resource monitor
     :param str case_name: name added to the results folder
     """
@@ -144,6 +195,18 @@ def _write_configuration(
         configuration["optimization"]["typicaldays"]["method"][
             "value"
         ] = typicaldays_method
+    # Checked against the options adopt knows how to hand to gurobi, rather
+    # than against the configuration on disk: the input data folder is written
+    # once and reused, so a configuration created before an option existed is
+    # still there and its key has to be created rather than only set
+    for option, value in gurobi_options.items():
+        if option not in GUROBI_PARAMETERS:
+            raise KeyError(
+                f"'{option}' is not a gurobi option adopt passes on, "
+                f"available: {sorted(GUROBI_PARAMETERS)}"
+            )
+        configuration["solveroptions"].setdefault(option, {})["value"] = value
+
     configuration["solveroptions"]["mipgap"]["value"] = mipgap
     # In hours. Without it a pathological run can hold the queue for the
     # template default of 100 hours

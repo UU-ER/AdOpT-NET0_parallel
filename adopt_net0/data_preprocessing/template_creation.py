@@ -405,6 +405,44 @@ def initialize_configuration_templates() -> dict:
                 "options": [-1, 0, 1, 2, 3],
                 "value": -1,
             },
+            "crossover": {
+                "description": "Controls the crossover that turns the barrier "
+                "solution into a basic one. 0 skips it, which is only possible "
+                "if no basis is needed afterwards.",
+                "options": [-1, 0, 1, 2, 3, 4, 5],
+                "value": -1,
+            },
+            "barhomogeneous": {
+                "description": "Controls the homogeneous barrier algorithm, "
+                "which is slower per iteration but copes with models the "
+                "ordinary barrier struggles on.",
+                "options": [-1, 0, 1],
+                "value": -1,
+            },
+            "scaleflag": {
+                "description": "Controls how the model is scaled before it is "
+                "solved. Higher values scale more aggressively.",
+                "options": [-1, 0, 1, 2, 3],
+                "value": -1,
+            },
+            "concurrentmethod": {
+                "description": "Chooses which algorithms the concurrent solver "
+                "races against each other.",
+                "options": [-1, 0, 1, 2, 3],
+                "value": -1,
+            },
+            "nodemethod": {
+                "description": "Algorithm used for the relaxations at the nodes "
+                "of the tree, as opposed to method, which is the root.",
+                "options": [-1, 0, 1, 2],
+                "value": -1,
+            },
+            "norelheurtime": {
+                "description": "Seconds spent in the no relaxation heuristic, "
+                "which looks for a feasible solution without solving any "
+                "relaxation. 0 switches it off.",
+                "value": 0,
+            },
         },
         "reporting": {
             "write_results": {
