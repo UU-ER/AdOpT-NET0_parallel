@@ -23,6 +23,12 @@ Stages:
 5. threads    a few configurations run again at a ladder of thread counts, to
               find out why a restricted solver is the faster one. Not part of
               the study proper, so it is not in the default set of stages
+6. gurobi a1  the root relaxation algorithm crossed with the thread count, on
+              a cheap configuration and one carrying binaries. Answers whether
+              any combination of a solver option and a thread count beats the
+              default at all
+7. gurobi a2  the same factorial on two more configurations, which says whether
+              the answer depends on the complexity of the model
 
 Examples::
 
@@ -30,7 +36,8 @@ Examples::
     python run_study.py --stages 0 1        # only the sizes and the matrix
     python run_study.py --stages 4          # only redo the figures and report
     python run_study.py --stages 5          # only the thread ladder
-    python run_study.py --stages 5 --dry-run
+    python run_study.py --stages 6          # gurobi options crossed with threads
+    python run_study.py --stages 6 --dry-run
 """
 
 import argparse
@@ -161,6 +168,39 @@ THREAD_LADDER_CONFIGS = [
 # Thread counts that are also run pinned to an equal number of cores. Kept to
 # the two cheaper configurations, and to counts high enough that an unpinned
 # run has a reason to spread across sockets
+
+# Stage 6. Does any combination of a gurobi option and a thread count beat the
+# default? An existence question, not a tuning exercise, so the design is a
+# full factorial with the thread count crossed in: a one-factor-at-a-time
+# screen excludes interactions by construction and cannot answer it.
+#
+# The responses are runtime, peak memory and cpu seconds. A combination that is
+# no faster but wants half the memory is a win, because memory is what a
+# cluster job has to ask for.
+#
+# threads = 1 is not decoration. It is the only level where barrier and
+# concurrent cannot win through parallelism, so an option that still helps
+# there is helping algorithmically, and the gain is not the threads'.
+GUROBI_THREAD_LEVELS = [1, 4, 16, 48]
+
+# -1 auto, 1 dual simplex (serial), 2 barrier (parallel), 3 concurrent
+GUROBI_METHOD_LEVELS = [-1, 1, 2, 3]
+
+# Two configurations per stage, one cheap and one that carries the binaries.
+# Sized from the measured wall times: td4 is 59 s, td16_bp1 339 s, td4_st0 34 s,
+# td16 271 s. td0 is deliberately absent, at 7500 s a run a sixteen cell
+# factorial over it is 33 hours on its own
+GUROBI_CONFIGS = {
+    "a1": [
+        {"typicaldays": 4, "knobs": {}},
+        {"typicaldays": 16, "knobs": {"bidirectional_precise": 1}},
+    ],
+    "a2": [
+        {"typicaldays": 4, "knobs": {"storage": "off"}},
+        {"typicaldays": 16, "knobs": {}},
+    ],
+}
+
 THREAD_LADDER_PINNED = [16, 24]
 THREAD_LADDER_PINNED_CONFIGS = [0, 1]
 
@@ -451,6 +491,96 @@ def stage_thread_ladder(dry_run: bool = False):
     return ok
 
 
+def _gurobi_thread_runs(part: str):
+    """
+    Builds the cells of the gurobi option by thread count factorial
+
+    Cheapest configuration first, so an interrupted stage still leaves a
+    complete block behind.
+
+    :param str part: which half of the design, "a1" or "a2"
+    :return: list of (typicaldays, knobs, method, threads) tuples
+    """
+    runs = []
+    for config in GUROBI_CONFIGS[part]:
+        for method in GUROBI_METHOD_LEVELS:
+            for threads in GUROBI_THREAD_LEVELS:
+                runs.append((config["typicaldays"], config["knobs"], method, threads))
+    return runs
+
+
+def stage_gurobi_threads(dry_run: bool = False, part: str = "a1"):
+    """
+    Crosses the root relaxation algorithm with the thread count.
+
+    Every run is skipped if it is already on disk, so the stage can be
+    interrupted and started again. A failing run does not stop the factorial.
+
+    :param bool dry_run: if True, the commands are only printed
+    :param str part: which half of the design, "a1" or "a2"
+    :return: True if every run that was attempted succeeded
+    """
+    from run_benchmark import already_done
+
+    runs = _gurobi_thread_runs(part)
+    log(
+        f"=== Stage 6{part}: gurobi options by threads, "
+        f"{len(GUROBI_CONFIGS[part])} configurations, {len(runs)} runs ==="
+    )
+
+    ok = True
+    skipped = 0
+
+    for number, (typicaldays, knobs, method, threads) in enumerate(runs, start=1):
+        settings = {
+            "mipgap": 0.02,
+            "time_limit": TIME_LIMIT,
+            "threads": threads,
+            "affinity_cores": 0,
+            "solver": "gurobi",
+            "sampling_interval": 0.5,
+            "method": method,
+        }
+
+        if not dry_run and already_done(CASE, typicaldays, knobs, settings):
+            skipped += 1
+            log(
+                f"[GUROBI] run {number}/{len(runs)}: td{typicaldays}, "
+                f"method {method}, {threads} threads, already done, skipped"
+            )
+            continue
+
+        command = [
+            sys.executable,
+            "run_benchmark.py",
+            "run",
+            "--case",
+            CASE,
+            "--typicaldays",
+            str(typicaldays),
+            "--time-limit",
+            str(TIME_LIMIT),
+            "--threads",
+            str(threads),
+            "--set",
+            f"method={method}",
+        ]
+        for knob, value in knobs.items():
+            command += ["--set", f"{knob}={value}"]
+
+        log(
+            f"[GUROBI] run {number}/{len(runs)}: td{typicaldays}, "
+            f"method {method}, {threads} threads"
+        )
+        ok &= run(command, dry_run)
+
+    if not dry_run:
+        log(f"[GUROBI] {skipped} of {len(runs)} runs were already done")
+        run([sys.executable, "run_benchmark.py", "collect"], dry_run)
+
+    return ok
+
+
 def stage_report(dry_run: bool = False):
     """
     Collects the runs, draws the figures and writes the summary
@@ -655,6 +785,8 @@ STAGES = {
     3: stage_full_resolution,
     4: stage_report,
     5: stage_thread_ladder,
+    6: lambda dry_run=False: stage_gurobi_threads(dry_run, part="a1"),
+    7: lambda dry_run=False: stage_gurobi_threads(dry_run, part="a2"),
 }
 
 # The thread ladder answers a question about the machine rather than about the
