@@ -1,28 +1,76 @@
+from warnings import warn
+
 from pyomo.environ import SolverFactory
+
+
+# Key of a solver option in the configuration, to the name gurobi knows it by.
+#
+# The spelling on the right is gurobi's own, taken from its parameter list. A
+# solver option that is not in this table never reaches the solver, and it is
+# dropped without a word, so a configuration can look carefully tuned and still
+# run at the defaults. Anything added to the configuration has to be added here
+# as well.
+GUROBI_PARAMETERS = {
+    "mipgap": "MIPGap",
+    "mipfocus": "MIPFocus",
+    "threads": "Threads",
+    "nodefilestart": "NodefileStart",
+    "heuristics": "Heuristics",
+    "presolve": "Presolve",
+    "branchdir": "BranchDir",
+    "lpwarmstart": "LPWarmStart",
+    "intfeastol": "IntFeasTol",
+    "feastol": "FeasibilityTol",
+    "cuts": "Cuts",
+    "numericfocus": "NumericFocus",
+    # The root relaxation. On a MIP the root goes to a single thread and is
+    # where most of the time is spent, so the algorithm that solves it, and the
+    # way it is finished off, weigh more than anything in the tree
+    "method": "Method",
+    "crossover": "Crossover",
+    "barhomogeneous": "BarHomogeneous",
+    "scaleflag": "ScaleFlag",
+    "concurrentmethod": "ConcurrentMethod",
+    # The tree
+    "nodemethod": "NodeMethod",
+    "norelheurtime": "NoRelHeurTime",
+}
+
+# Solver options that are not gurobi parameters. "solver" names the solver, and
+# the time limit is in hours in the configuration and in seconds for gurobi, so
+# it is converted rather than passed on
+NON_PARAMETER_OPTIONS = {"solver", "timelim"}
 
 
 def get_gurobi_parameters(solveroptions: dict):
     """
     Initiates the gurobi solver and defines solver parameters
 
+    Options the configuration does not carry are left at the gurobi default,
+    which is what an older configuration, written before a parameter was added,
+    relies on.
+
     :param dict solveroptions: dict with solver parameters
     :return: Gurobi Solver
     """
     solver = SolverFactory(solveroptions["solver"]["value"], solver_io="python")
+
+    # In hours in the configuration, in seconds for gurobi
     solver.options["TimeLimit"] = solveroptions["timelim"]["value"] * 3600
-    solver.options["MIPGap"] = solveroptions["mipgap"]["value"]
-    solver.options["MIPFocus"] = solveroptions["mipfocus"]["value"]
-    solver.options["Threads"] = solveroptions["threads"]["value"]
-    solver.options["NodefileStart"] = solveroptions["nodefilestart"]["value"]
-    solver.options["Method"] = solveroptions["method"]["value"]
-    solver.options["Heuristics"] = solveroptions["heuristics"]["value"]
-    solver.options["Presolve"] = solveroptions["presolve"]["value"]
-    solver.options["BranchDir"] = solveroptions["branchdir"]["value"]
-    solver.options["LPWarmStart"] = solveroptions["lpwarmstart"]["value"]
-    solver.options["IntFeasTol"] = solveroptions["intfeastol"]["value"]
-    solver.options["FeasibilityTol"] = solveroptions["feastol"]["value"]
-    solver.options["Cuts"] = solveroptions["cuts"]["value"]
-    solver.options["NumericFocus"] = solveroptions["numericfocus"]["value"]
+
+    for option, parameter in GUROBI_PARAMETERS.items():
+        if option in solveroptions:
+            solver.options[parameter] = solveroptions[option]["value"]
+
+    # A solver option nobody reads is worse than no option at all, as it looks
+    # like it is doing something
+    unknown = set(solveroptions) - set(GUROBI_PARAMETERS) - NON_PARAMETER_OPTIONS
+    if unknown:
+        warn(
+            f"Solver options {sorted(unknown)} are not gurobi parameters and "
+            "were ignored. Check the spelling against GUROBI_PARAMETERS in "
+            "adopt_net0/utilities.py"
+        )
 
     return solver
 
