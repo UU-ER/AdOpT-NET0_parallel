@@ -47,6 +47,7 @@ Examples::
 
 import argparse
 import datetime
+import re
 import json
 import platform
 import socket
@@ -276,12 +277,15 @@ def write_machine_info():
     return info
 
 
-def run(command: list, dry_run: bool = False):
+def run(command: list, dry_run: bool = False, produced: list = None):
     """
     Runs one command of the study and reports how long it took
 
     :param list command: command line to run
     :param bool dry_run: if True, the command is only printed
+    :param list produced: if given, the name of the result folder the command
+        created is appended to it. A run writes exactly one folder, so the
+        difference before and after names it without having to parse anything
     :return: True if the command succeeded
     """
     printable = " ".join(str(part) for part in command)
@@ -289,10 +293,15 @@ def run(command: list, dry_run: bool = False):
         print(f"  would run: {printable}")
         return True
 
+    before = _result_folders()
+
     log(f"START {printable}")
     start = time.time()
     result = subprocess.run(command, cwd=str(BASE))
     duration = time.time() - start
+
+    if produced is not None:
+        produced.extend(sorted(_result_folders() - before))
 
     if result.returncode == 0:
         log(f"DONE  in {duration / 60:.1f} min")
@@ -300,6 +309,109 @@ def run(command: list, dry_run: bool = False):
 
     log(f"FAILED with exit code {result.returncode} after {duration / 60:.1f} min")
     return False
+
+
+def _result_folders():
+    """
+    Names of the result folders at the top level
+
+    :return: set of folder names
+    """
+    if not RESULTS_PATH.is_dir():
+        return set()
+    return {folder.name for folder in RESULTS_PATH.iterdir() if folder.is_dir()}
+
+
+def _cell_settings(options: dict, threads: int):
+    """
+    Settings of one cell of a factorial.
+
+    The stage and the manifest both go through here, so that the case name a
+    run is given and the case name the manifest looks for cannot drift apart.
+
+    :param dict options: solver options of the cell
+    :param int threads: number of threads
+    :return: dict of settings
+    """
+    return {
+        "mipgap": 0.02,
+        "time_limit": TIME_LIMIT,
+        "threads": threads,
+        "affinity_cores": 0,
+        "solver": "gurobi",
+        "sampling_interval": 0.5,
+        **options,
+    }
+
+
+# Which cells belong to which stage, so a manifest can be written for a stage
+# that has already run as well as for one that is running now
+STAGE_CELLS = {
+    6: lambda: _gurobi_thread_runs("a1"),
+    7: lambda: _gurobi_thread_runs("a2"),
+    8: lambda: _gurobi_cut_runs("a1"),
+    9: lambda: _gurobi_cut_runs("a2"),
+}
+
+
+def _folders_of(case_name: str):
+    """
+    Finished result folders of a case name
+
+    :param str case_name: case name to look for
+    :return: sorted list of folder names, oldest first
+    """
+    found = []
+    for folder in RESULTS_PATH.glob(f"*_{case_name}*"):
+        without_timestamp = folder.name.split("_", 1)[-1]
+        without_counter = re.sub(r"-\d+$", "", without_timestamp)
+        if without_counter != case_name:
+            continue
+        if (folder / "profile_summary.csv").exists():
+            found.append(folder.name)
+    return sorted(found)
+
+
+def write_manifest(stage: int):
+    """
+    Writes the list of result folders that belong to a stage.
+
+    Built from the cells of the stage rather than from what happened to be
+    created while it ran, so it can be written for a stage that finished
+    earlier, and so it survives a stage that was interrupted and resumed.
+
+    A cell shared with another stage, such as the all default cell, is listed
+    by both. That is correct: it is one run, and both stages use it.
+
+    :param int stage: stage number, 6 to 9
+    :return: Path of the manifest, or None if the stage has no cells
+    """
+    from run_benchmark import _build_case_name
+
+    if stage not in STAGE_CELLS:
+        return None
+
+    lines = []
+    missing = 0
+    for typicaldays, knobs, options, threads in STAGE_CELLS[stage]():
+        settings = _cell_settings(options, threads)
+        case_name = _build_case_name(
+            CASE, {"typicaldays": typicaldays, **knobs, **settings}
+        )
+        folders = _folders_of(case_name)
+        if not folders:
+            missing += 1
+            continue
+        # The newest, in case a cell was run more than once
+        lines.append(folders[-1])
+
+    manifest = RESULTS_PATH / f"manifest_stage{stage}.txt"
+    manifest.write_text("\n".join(sorted(set(lines))) + "\n")
+    log(
+        f"[MANIFEST] stage {stage}: {len(set(lines))} folders written to "
+        f"{manifest.name}" + (f", {missing} cells not on disk" if missing else "")
+    )
+    return manifest
 
 
 def stage_sizes(dry_run: bool = False):
@@ -524,13 +636,20 @@ def _gurobi_thread_runs(part: str):
     complete block behind.
 
     :param str part: which half of the design, "a1" or "a2"
-    :return: list of (typicaldays, knobs, method, threads) tuples
+    :return: list of (typicaldays, knobs, options, threads) tuples
     """
     runs = []
     for config in GUROBI_CONFIGS[part]:
         for method in GUROBI_METHOD_LEVELS:
             for threads in GUROBI_THREAD_LEVELS:
-                runs.append((config["typicaldays"], config["knobs"], method, threads))
+                runs.append(
+                    (
+                        config["typicaldays"],
+                        config["knobs"],
+                        {"method": method},
+                        threads,
+                    )
+                )
     return runs
 
 
@@ -556,16 +675,11 @@ def stage_gurobi_threads(dry_run: bool = False, part: str = "a1"):
     ok = True
     skipped = 0
 
-    for number, (typicaldays, knobs, method, threads) in enumerate(runs, start=1):
-        settings = {
-            "mipgap": 0.02,
-            "time_limit": TIME_LIMIT,
-            "threads": threads,
-            "affinity_cores": 0,
-            "solver": "gurobi",
-            "sampling_interval": 0.5,
-            "method": method,
-        }
+    produced = []
+
+    for number, (typicaldays, knobs, options, threads) in enumerate(runs, start=1):
+        settings = _cell_settings(options, threads)
+        method = options["method"]
 
         if not dry_run and already_done(CASE, typicaldays, knobs, settings):
             skipped += 1
@@ -597,10 +711,11 @@ def stage_gurobi_threads(dry_run: bool = False, part: str = "a1"):
             f"[GUROBI] run {number}/{len(runs)}: td{typicaldays}, "
             f"method {method}, {threads} threads"
         )
-        ok &= run(command, dry_run)
+        ok &= run(command, dry_run, produced)
 
     if not dry_run:
         log(f"[GUROBI] {skipped} of {len(runs)} runs were already done")
+        write_manifest(6 if part == "a1" else 7)
         run([sys.executable, "run_benchmark.py", "collect"], dry_run)
 
     return ok
@@ -660,17 +775,10 @@ def stage_gurobi_cuts(dry_run: bool = False, part: str = "a1"):
 
     ok = True
     skipped = 0
+    produced = []
 
     for number, (typicaldays, knobs, options, threads) in enumerate(runs, start=1):
-        settings = {
-            "mipgap": 0.02,
-            "time_limit": TIME_LIMIT,
-            "threads": threads,
-            "affinity_cores": 0,
-            "solver": "gurobi",
-            "sampling_interval": 0.5,
-            **options,
-        }
+        settings = _cell_settings(options, threads)
         spelled = ", ".join(f"{name} {value}" for name, value in options.items())
 
         if not dry_run and already_done(CASE, typicaldays, knobs, settings):
@@ -703,10 +811,11 @@ def stage_gurobi_cuts(dry_run: bool = False, part: str = "a1"):
             f"[CUTS] run {number}/{len(runs)}: td{typicaldays}, {spelled}, "
             f"{threads} threads"
         )
-        ok &= run(command, dry_run)
+        ok &= run(command, dry_run, produced)
 
     if not dry_run:
         log(f"[CUTS] {skipped} of {len(runs)} runs were already done")
+        write_manifest(8 if part == "a1" else 9)
         run([sys.executable, "run_benchmark.py", "collect"], dry_run)
 
     return ok
@@ -957,7 +1066,21 @@ def main():
         action="store_true",
         help="print what would run without running it",
     )
+    parser.add_argument(
+        "--manifest",
+        type=int,
+        nargs="+",
+        choices=sorted(STAGE_CELLS),
+        help="write the list of result folders belonging to these stages and "
+        "exit, without running anything. Built from the cells of the stage, so "
+        "it also works for a stage that finished earlier",
+    )
     args = parser.parse_args()
+
+    if args.manifest:
+        for stage in args.manifest:
+            write_manifest(stage)
+        return
     THREADS = args.threads
 
     started = time.time()
