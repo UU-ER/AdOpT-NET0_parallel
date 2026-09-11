@@ -40,6 +40,16 @@ SOLVER_LOG_PATTERNS = {
     ),
 }
 
+# Header that opens the branch and bound table. Everything before it that looks
+# like a row of numbers is the simplex or barrier iteration log, which has the
+# same shape and would otherwise be read as node counts
+NODE_LOG_HEADER = re.compile(r"^\s*Nodes\s*\|.*Current Node.*\|", re.MULTILINE)
+
+# One row of that table: an optional marker for a heuristic or an improving
+# solution, the explored and unexplored node counts, and the elapsed seconds at
+# the end of the line
+NODE_LOG_ROW = re.compile(r"^[H*]?\s*(\d+)\s+(\d+)\s+.*?(\d+)s\s*$", re.MULTILINE)
+
 
 class ResourceMonitor:
     """
@@ -708,7 +718,39 @@ def collect_solver_log_metrics(log_path):
         if matches:
             metrics[column] = float(matches[-1])
 
+    metrics["root_node_end_s"] = _root_node_end(content)
+
     return metrics
+
+
+def _root_node_end(content: str):
+    """
+    Elapsed seconds at which the solver left the root node.
+
+    Between the root relaxation and the first branching, the solver sits at the
+    root adding cuts and re-solving the LP, and on the models this benchmark
+    runs that stretch holds most of the solve. It is reported nowhere as a
+    number: it has to be read off the last row of the branch and bound table
+    that still shows no explored and no unexplored nodes.
+
+    :param str content: text of the solver log
+    :return: float seconds, or "" if the log has no branch and bound table
+    """
+    header = None
+    for header in NODE_LOG_HEADER.finditer(content):
+        pass
+    if header is None:
+        return ""
+
+    at_root = [
+        float(seconds)
+        for explored, unexplored, seconds in NODE_LOG_ROW.findall(
+            content[header.end() :]
+        )
+        if explored == "0" and unexplored == "0"
+    ]
+
+    return at_root[-1] if at_root else ""
 
 
 def collect_solution_metrics(solver, solution, log_path=None):

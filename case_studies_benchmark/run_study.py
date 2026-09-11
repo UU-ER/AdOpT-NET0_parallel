@@ -29,6 +29,11 @@ Stages:
               default at all
 7. gurobi a2  the same factorial on two more configurations, which says whether
               the answer depends on the complexity of the model
+8. cuts a1    the options that steer the cut loop at the root node, crossed
+              with the thread count. That loop is where about 80 % of the
+              solve goes on this model family, so these options have far more
+              time in scope than the root algorithm does
+9. cuts a2    the same on two more configurations
 
 Examples::
 
@@ -42,6 +47,7 @@ Examples::
 
 import argparse
 import datetime
+import re
 import json
 import platform
 import socket
@@ -181,6 +187,26 @@ THREAD_LADDER_CONFIGS = [
 # threads = 1 is not decoration. It is the only level where barrier and
 # concurrent cannot win through parallelism, so an option that still helps
 # there is helping algorithmically, and the gain is not the threads'.
+
+# Stage 8. The smoke test of 2026-09-11 on td4 showed where the time of this
+# model family actually goes: presolve 0.9 s, the root relaxation 19 s, and
+# then a hundred seconds of cut rounds at the root node, with the tree closing
+# after eighteen nodes. So roughly 80 % of the solve is the cut loop at the
+# root, not the root LP and not the search.
+#
+# Two things follow. The options that steer the cut loop have far more time in
+# scope than Method has, and an almost empty tree has nothing to parallelise,
+# which is the likely reason the solver was only ever seen using 2.1 cores of
+# 48. This stage crosses the cut loop options with the thread count.
+#
+# lpwarmstart is in here because the adopt template forces it to 0 while the
+# gurobi default is -1, and a model that re-solves its root LP once per cut
+# round is exactly where that costs something.
+GUROBI_CUT_LEVELS = [0, -1, 3]
+GUROBI_MIPFOCUS_LEVELS = [0, 3]
+GUROBI_LPWARMSTART_LEVELS = [0, -1]
+GUROBI_CUT_THREAD_LEVELS = [4, 48]
+
 GUROBI_THREAD_LEVELS = [1, 4, 16, 48]
 
 # -1 auto, 1 dual simplex (serial), 2 barrier (parallel), 3 concurrent
@@ -251,12 +277,15 @@ def write_machine_info():
     return info
 
 
-def run(command: list, dry_run: bool = False):
+def run(command: list, dry_run: bool = False, produced: list = None):
     """
     Runs one command of the study and reports how long it took
 
     :param list command: command line to run
     :param bool dry_run: if True, the command is only printed
+    :param list produced: if given, the name of the result folder the command
+        created is appended to it. A run writes exactly one folder, so the
+        difference before and after names it without having to parse anything
     :return: True if the command succeeded
     """
     printable = " ".join(str(part) for part in command)
@@ -264,10 +293,15 @@ def run(command: list, dry_run: bool = False):
         print(f"  would run: {printable}")
         return True
 
+    before = _result_folders()
+
     log(f"START {printable}")
     start = time.time()
     result = subprocess.run(command, cwd=str(BASE))
     duration = time.time() - start
+
+    if produced is not None:
+        produced.extend(sorted(_result_folders() - before))
 
     if result.returncode == 0:
         log(f"DONE  in {duration / 60:.1f} min")
@@ -275,6 +309,109 @@ def run(command: list, dry_run: bool = False):
 
     log(f"FAILED with exit code {result.returncode} after {duration / 60:.1f} min")
     return False
+
+
+def _result_folders():
+    """
+    Names of the result folders at the top level
+
+    :return: set of folder names
+    """
+    if not RESULTS_PATH.is_dir():
+        return set()
+    return {folder.name for folder in RESULTS_PATH.iterdir() if folder.is_dir()}
+
+
+def _cell_settings(options: dict, threads: int):
+    """
+    Settings of one cell of a factorial.
+
+    The stage and the manifest both go through here, so that the case name a
+    run is given and the case name the manifest looks for cannot drift apart.
+
+    :param dict options: solver options of the cell
+    :param int threads: number of threads
+    :return: dict of settings
+    """
+    return {
+        "mipgap": 0.02,
+        "time_limit": TIME_LIMIT,
+        "threads": threads,
+        "affinity_cores": 0,
+        "solver": "gurobi",
+        "sampling_interval": 0.5,
+        **options,
+    }
+
+
+# Which cells belong to which stage, so a manifest can be written for a stage
+# that has already run as well as for one that is running now
+STAGE_CELLS = {
+    6: lambda: _gurobi_thread_runs("a1"),
+    7: lambda: _gurobi_thread_runs("a2"),
+    8: lambda: _gurobi_cut_runs("a1"),
+    9: lambda: _gurobi_cut_runs("a2"),
+}
+
+
+def _folders_of(case_name: str):
+    """
+    Finished result folders of a case name
+
+    :param str case_name: case name to look for
+    :return: sorted list of folder names, oldest first
+    """
+    found = []
+    for folder in RESULTS_PATH.glob(f"*_{case_name}*"):
+        without_timestamp = folder.name.split("_", 1)[-1]
+        without_counter = re.sub(r"-\d+$", "", without_timestamp)
+        if without_counter != case_name:
+            continue
+        if (folder / "profile_summary.csv").exists():
+            found.append(folder.name)
+    return sorted(found)
+
+
+def write_manifest(stage: int):
+    """
+    Writes the list of result folders that belong to a stage.
+
+    Built from the cells of the stage rather than from what happened to be
+    created while it ran, so it can be written for a stage that finished
+    earlier, and so it survives a stage that was interrupted and resumed.
+
+    A cell shared with another stage, such as the all default cell, is listed
+    by both. That is correct: it is one run, and both stages use it.
+
+    :param int stage: stage number, 6 to 9
+    :return: Path of the manifest, or None if the stage has no cells
+    """
+    from run_benchmark import _build_case_name
+
+    if stage not in STAGE_CELLS:
+        return None
+
+    lines = []
+    missing = 0
+    for typicaldays, knobs, options, threads in STAGE_CELLS[stage]():
+        settings = _cell_settings(options, threads)
+        case_name = _build_case_name(
+            CASE, {"typicaldays": typicaldays, **knobs, **settings}
+        )
+        folders = _folders_of(case_name)
+        if not folders:
+            missing += 1
+            continue
+        # The newest, in case a cell was run more than once
+        lines.append(folders[-1])
+
+    manifest = RESULTS_PATH / f"manifest_stage{stage}.txt"
+    manifest.write_text("\n".join(sorted(set(lines))) + "\n")
+    log(
+        f"[MANIFEST] stage {stage}: {len(set(lines))} folders written to "
+        f"{manifest.name}" + (f", {missing} cells not on disk" if missing else "")
+    )
+    return manifest
 
 
 def stage_sizes(dry_run: bool = False):
@@ -499,13 +636,20 @@ def _gurobi_thread_runs(part: str):
     complete block behind.
 
     :param str part: which half of the design, "a1" or "a2"
-    :return: list of (typicaldays, knobs, method, threads) tuples
+    :return: list of (typicaldays, knobs, options, threads) tuples
     """
     runs = []
     for config in GUROBI_CONFIGS[part]:
         for method in GUROBI_METHOD_LEVELS:
             for threads in GUROBI_THREAD_LEVELS:
-                runs.append((config["typicaldays"], config["knobs"], method, threads))
+                runs.append(
+                    (
+                        config["typicaldays"],
+                        config["knobs"],
+                        {"method": method},
+                        threads,
+                    )
+                )
     return runs
 
 
@@ -531,16 +675,11 @@ def stage_gurobi_threads(dry_run: bool = False, part: str = "a1"):
     ok = True
     skipped = 0
 
-    for number, (typicaldays, knobs, method, threads) in enumerate(runs, start=1):
-        settings = {
-            "mipgap": 0.02,
-            "time_limit": TIME_LIMIT,
-            "threads": threads,
-            "affinity_cores": 0,
-            "solver": "gurobi",
-            "sampling_interval": 0.5,
-            "method": method,
-        }
+    produced = []
+
+    for number, (typicaldays, knobs, options, threads) in enumerate(runs, start=1):
+        settings = _cell_settings(options, threads)
+        method = options["method"]
 
         if not dry_run and already_done(CASE, typicaldays, knobs, settings):
             skipped += 1
@@ -572,10 +711,111 @@ def stage_gurobi_threads(dry_run: bool = False, part: str = "a1"):
             f"[GUROBI] run {number}/{len(runs)}: td{typicaldays}, "
             f"method {method}, {threads} threads"
         )
-        ok &= run(command, dry_run)
+        ok &= run(command, dry_run, produced)
 
     if not dry_run:
         log(f"[GUROBI] {skipped} of {len(runs)} runs were already done")
+        write_manifest(6 if part == "a1" else 7)
+        run([sys.executable, "run_benchmark.py", "collect"], dry_run)
+
+    return ok
+
+
+def _gurobi_cut_runs(part: str):
+    """
+    Builds the cells of the cut loop by thread count factorial
+
+    :param str part: which set of configurations, "a1" or "a2"
+    :return: list of (typicaldays, knobs, options, threads) tuples
+    """
+    runs = []
+    for config in GUROBI_CONFIGS[part]:
+        for cuts in GUROBI_CUT_LEVELS:
+            for mipfocus in GUROBI_MIPFOCUS_LEVELS:
+                for lpwarmstart in GUROBI_LPWARMSTART_LEVELS:
+                    for threads in GUROBI_CUT_THREAD_LEVELS:
+                        runs.append(
+                            (
+                                config["typicaldays"],
+                                config["knobs"],
+                                {
+                                    "cuts": cuts,
+                                    "mipfocus": mipfocus,
+                                    "lpwarmstart": lpwarmstart,
+                                },
+                                threads,
+                            )
+                        )
+    return runs
+
+
+def stage_gurobi_cuts(dry_run: bool = False, part: str = "a1"):
+    """
+    Crosses the options that steer the root cut loop with the thread count.
+
+    Every run is skipped if it is already on disk, so the stage can be
+    interrupted and started again. A failing run does not stop the factorial.
+
+    A cell at cuts = 0 can be much slower than the rest, since the cut loop is
+    what closes this model, and can reach the time limit. That is not a failure
+    and the run still carries a valid resource measurement, with
+    termination_condition saying what happened.
+
+    :param bool dry_run: if True, the commands are only printed
+    :param str part: which set of configurations, "a1" or "a2"
+    :return: True if every run that was attempted succeeded
+    """
+    from run_benchmark import already_done
+
+    runs = _gurobi_cut_runs(part)
+    log(
+        f"=== Stage 8{part}: root cut loop by threads, "
+        f"{len(GUROBI_CONFIGS[part])} configurations, {len(runs)} runs ==="
+    )
+
+    ok = True
+    skipped = 0
+    produced = []
+
+    for number, (typicaldays, knobs, options, threads) in enumerate(runs, start=1):
+        settings = _cell_settings(options, threads)
+        spelled = ", ".join(f"{name} {value}" for name, value in options.items())
+
+        if not dry_run and already_done(CASE, typicaldays, knobs, settings):
+            skipped += 1
+            log(
+                f"[CUTS] run {number}/{len(runs)}: td{typicaldays}, {spelled}, "
+                f"{threads} threads, already done, skipped"
+            )
+            continue
+
+        command = [
+            sys.executable,
+            "run_benchmark.py",
+            "run",
+            "--case",
+            CASE,
+            "--typicaldays",
+            str(typicaldays),
+            "--time-limit",
+            str(TIME_LIMIT),
+            "--threads",
+            str(threads),
+        ]
+        for name, value in options.items():
+            command += ["--set", f"{name}={value}"]
+        for knob, value in knobs.items():
+            command += ["--set", f"{knob}={value}"]
+
+        log(
+            f"[CUTS] run {number}/{len(runs)}: td{typicaldays}, {spelled}, "
+            f"{threads} threads"
+        )
+        ok &= run(command, dry_run, produced)
+
+    if not dry_run:
+        log(f"[CUTS] {skipped} of {len(runs)} runs were already done")
+        write_manifest(8 if part == "a1" else 9)
         run([sys.executable, "run_benchmark.py", "collect"], dry_run)
 
     return ok
@@ -787,6 +1027,8 @@ STAGES = {
     5: stage_thread_ladder,
     6: lambda dry_run=False: stage_gurobi_threads(dry_run, part="a1"),
     7: lambda dry_run=False: stage_gurobi_threads(dry_run, part="a2"),
+    8: lambda dry_run=False: stage_gurobi_cuts(dry_run, part="a1"),
+    9: lambda dry_run=False: stage_gurobi_cuts(dry_run, part="a2"),
 }
 
 # The thread ladder answers a question about the machine rather than about the
@@ -824,7 +1066,21 @@ def main():
         action="store_true",
         help="print what would run without running it",
     )
+    parser.add_argument(
+        "--manifest",
+        type=int,
+        nargs="+",
+        choices=sorted(STAGE_CELLS),
+        help="write the list of result folders belonging to these stages and "
+        "exit, without running anything. Built from the cells of the stage, so "
+        "it also works for a stage that finished earlier",
+    )
     args = parser.parse_args()
+
+    if args.manifest:
+        for stage in args.manifest:
+            write_manifest(stage)
+        return
     THREADS = args.threads
 
     started = time.time()
