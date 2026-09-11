@@ -10,6 +10,11 @@ import logging
 
 log = logging.getLogger(__name__)
 
+# Seed of the typical day clustering. Any value would do, the point is that it
+# is fixed: the typical days, and with them the model, are then the same on
+# every run
+CLUSTERING_SEED = 42
+
 
 class DataHandle:
     """
@@ -680,11 +685,20 @@ class DataHandle:
 
         Uses the package tsam to cluster all time-dependent input data (time series
         and time dependent technology performance).
+
+        The clustering is seeded, so that a run is reproducible. tsam takes no
+        seed argument and builds its sklearn KMeans without a ``random_state``,
+        so it draws its initial centroids from numpy's global RandomState.
+        Unseeded, two runs at identical settings cluster the days slightly
+        differently and build slightly different models, and branch and bound
+        turns that microscopic difference into a factor of several in runtime.
         """
         nr_clusters = self.model_config["optimization"]["typicaldays"]["N"]["value"]
         hours_per_day = self.topology["hours_per_day"]["full"]
 
         self.topology["time_index"]["clustered"] = range(0, nr_clusters * hours_per_day)
+
+        np.random.seed(CLUSTERING_SEED)
 
         clustered_resolution = {}
         for investment_period in self.topology["investment_periods"]:
