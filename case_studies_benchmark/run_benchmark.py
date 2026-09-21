@@ -141,6 +141,7 @@ DEFAULT_SETTINGS = {
     "nodemethod": -1,
     "presolve": -1,
     "cuts": -1,
+    "cutpasses": -1,
     "mipfocus": 0,
     "heuristics": 0.05,
     "norelheurtime": 0,
@@ -187,6 +188,7 @@ KNOB_CODES = {
     "nodemethod": "nm",
     "presolve": "pre",
     "cuts": "cut",
+    "cutpasses": "cp",
     "mipfocus": "mf",
     "heuristics": "heu",
     "norelheurtime": "nrh",
@@ -249,6 +251,61 @@ KNOB_LEVELS = {
 }
 
 
+# A result folder is named <timestamp>_<case name>-<counter>, and the timestamp
+# is what tells one apart from a folder a finished sweep was archived into
+RUN_FOLDER = re.compile(r"^\d{14}_")
+
+
+# Archived runs, by results directory. A run always lands at the top level, so
+# the archive only changes when a sweep is filed away by hand between
+# campaigns, which is also the moment nothing is running. The top level is read
+# fresh on every call, so a run that finishes while a stage is going is seen
+_ARCHIVED_FOLDERS = {}
+
+
+def run_folders(results_path=None):
+    """
+    Every result folder under the results directory, at any depth.
+
+    A finished sweep is archived into a subfolder, and the stages of one study
+    into a subfolder each, so looking only at the top level makes every
+    archived run invisible and a stage started afterwards runs its cells again.
+
+    The walk stops at a result folder rather than descending into it, so the
+    cost is the number of archive folders and not the number of files in them.
+    That matters: the results directory lives on a network share, where the
+    full walk is seconds rather than milliseconds.
+
+    :param Path results_path: directory to walk, default the results directory
+    :return: iterator of Paths, each a result folder
+    """
+    root = results_path or RESULTS_PATH
+    if not root.is_dir():
+        return
+
+    archived = _ARCHIVED_FOLDERS.get(root)
+    if archived is None:
+        archived = []
+        pending = []
+        for entry in root.iterdir():
+            if entry.is_dir() and not RUN_FOLDER.match(entry.name):
+                pending.append(entry)
+        while pending:
+            for entry in pending.pop().iterdir():
+                if not entry.is_dir():
+                    continue
+                if RUN_FOLDER.match(entry.name):
+                    archived.append(entry)
+                else:
+                    pending.append(entry)
+        _ARCHIVED_FOLDERS[root] = archived
+
+    for entry in root.iterdir():
+        if entry.is_dir() and RUN_FOLDER.match(entry.name):
+            yield entry
+    yield from archived
+
+
 def already_done(case: str, typicaldays: int, combination: dict, settings: dict):
     """
     Checks whether a configuration has already been run.
@@ -257,6 +314,10 @@ def already_done(case: str, typicaldays: int, combination: dict, settings: dict)
     a finished run can be recognised by its profile summary being on disk. This
     makes a long sweep resumable: interrupt it, start it again, and it picks up
     where it stopped.
+
+    Archived runs count. A sweep that was filed away was still run, and the
+    alternative is that filing the results of a stage silently schedules it to
+    be run a second time.
 
     :param str case: name of the case study
     :param int typicaldays: number of typical days
@@ -268,9 +329,9 @@ def already_done(case: str, typicaldays: int, combination: dict, settings: dict)
         case, {"typicaldays": typicaldays, **combination, **settings}
     )
 
-    for folder in RESULTS_PATH.glob(f"*_{case_name}*"):
-        # A folder is named <timestamp>_<case name>-<counter>. The name has to
-        # match exactly, not just as a prefix of a longer configuration.
+    for folder in run_folders():
+        # The name has to match exactly, not just as a prefix of a longer
+        # configuration
         without_timestamp = folder.name.split("_", 1)[-1]
         without_counter = re.sub(r"-\d+$", "", without_timestamp)
         if without_counter != case_name:
