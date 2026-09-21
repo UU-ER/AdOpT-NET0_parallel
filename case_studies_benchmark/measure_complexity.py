@@ -22,36 +22,33 @@ sys.path.insert(0, str(Path(__file__).parent))
 import adopt_net0 as adopt
 
 from case_studies import CASE_STUDIES
+from run_benchmark import KNOB_LEVELS
 
 BASE = Path(__file__).parent
 INPUT_DATA_PATH = BASE / "inputData"
 RESULTS_PATH = BASE / "results"
 
-# Baseline: every knob at its cheapest setting
-BASELINE = {
-    "typicaldays_method": 1,
-    "electricity_price": "constant",
-    "hydrogen_demand": "constant",
-    "pipeline_capex": "linear",
-    "bidirectional_precise": 0,
-    "pipeline_size_min": 0,
-    "storage": "on",
-    "storage_precise": 0,
-    "pv": "on",
-}
+def knob_settings(case: str):
+    """
+    The baseline and the one-knob-on settings of a case study.
 
-# One knob switched on at a time
-KNOBS = {
-    "typicaldays_method": 2,
-    "electricity_price": "fluctuating",
-    "hydrogen_demand": "fluctuating",
-    "pipeline_capex": "fixed_plus_linear",
-    "bidirectional_precise": 1,
-    "pipeline_size_min": 250,
-    "storage": "off",
-    "storage_precise": 1,
-    "pv": "off",
-}
+    Taken from KNOB_LEVELS, which lists the levels of every knob cheapest
+    first, rather than written out here: a second case study has different
+    knobs, and two lists that have to agree is one list too many.
+
+    :param str case: name of the case study
+    :return: tuple of the baseline settings and the settings per knob
+    """
+    if case not in KNOB_LEVELS:
+        raise KeyError(
+            f"No knob levels defined for '{case}', available: "
+            f"{sorted(KNOB_LEVELS)}"
+        )
+
+    levels = KNOB_LEVELS[case]
+    baseline = {knob: values[0] for knob, values in levels.items()}
+    knobs = {knob: values[-1] for knob, values in levels.items()}
+    return baseline, knobs
 
 
 def measure(case: str, typicaldays: int, settings: dict):
@@ -119,21 +116,30 @@ def main():
     parser.add_argument(
         "--knobs",
         nargs="+",
-        choices=list(KNOBS),
-        help="knobs to measure, default all of them",
+        help="knobs to measure, default every knob of the case study",
     )
     args = parser.parse_args()
 
-    knobs = {k: v for k, v in KNOBS.items() if not args.knobs or k in args.knobs}
+    # The knobs belong to the case study, so they can only be resolved once
+    # the case is known, which is after parsing
+    baseline_settings, all_knobs = knob_settings(args.case)
+
+    unknown = set(args.knobs or []) - set(all_knobs)
+    if unknown:
+        raise SystemExit(
+            f"'{args.case}' has no knob {sorted(unknown)}, "
+            f"available: {sorted(all_knobs)}"
+        )
+    knobs = {k: v for k, v in all_knobs.items() if not args.knobs or k in args.knobs}
 
     results = {}
 
     print(f"\nBaseline (all knobs off), {args.typicaldays} typical days")
-    baseline = measure(args.case, args.typicaldays, dict(BASELINE))
+    baseline = measure(args.case, args.typicaldays, dict(baseline_settings))
     results["baseline"] = baseline
 
     for knob, value in knobs.items():
-        settings = dict(BASELINE)
+        settings = dict(baseline_settings)
         settings[knob] = value
         print(f"\nKnob: {knob} = {value}")
         results[f"{knob}={value}"] = measure(args.case, args.typicaldays, settings)

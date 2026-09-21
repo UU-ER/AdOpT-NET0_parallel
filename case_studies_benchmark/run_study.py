@@ -42,6 +42,14 @@ Stages:
               turning the cuts off altogether. Stages 8 and 9 found cuts = 0
               worth a factor two, and the node logs say why: the first pass
               carries the bound and the rest are nearly free of it
+12. nl cuts   whether cuts = 0 is still the faster arm on the nine node case
+              study. Everything the study recommends was measured on four_node
+              at 2 %, where difficulty comes from the resolution and an arm
+              could buy time by stopping at a looser bound. The cheap half of
+              that case study, two resolutions, and it runs first
+13. nl threads the thread ladder of the same case study, at the cut setting
+              stage 12 favoured. Answers on a topology driven model what stage
+              10 answered on four_node: how many cores a run should ask for
 
 Examples::
 
@@ -52,6 +60,8 @@ Examples::
     python run_study.py --stages 6          # gurobi options crossed with threads
     python run_study.py --stages 6 --dry-run
     python run_study.py --stages 10 11      # the follow-up of 2026-09-21
+    python run_study.py --stages 12         # the nine node case study, cuts
+    python run_study.py --stages 13         # the same case study, threads
 """
 
 import argparse
@@ -80,6 +90,11 @@ LOG_FILE = BASE / "study.log"
 MACHINE_FILE = BASE / "machine.json"
 
 CASE = "four_node"
+
+# The optimality gap every cell is solved to. Owned by run_benchmark so that a
+# run launched by hand and a run launched by a stage are solved to the same
+# gap. 0.5 % since 2026-09-21, see the comment there for why 2 % was dropped
+from run_benchmark import MIPGAP
 
 # Hours. A run that hits this limit still gives a valid resource measurement,
 # it just does not reach the optimum, and the sweep carries on
@@ -265,6 +280,53 @@ GUROBI_CUTPASSES_REFERENCES = [{"cuts": 0}]
 
 GUROBI_CUTPASSES_THREAD_LEVELS = [4, 48]
 
+# Stage 12, the nine node case study. Every number the study has is a
+# four_node number, from a model whose difficulty comes from its resolution:
+# the median tree is one node and the deepest ever seen is 248. nl_node puts
+# 84 candidate arcs on a real corridor map, so its binaries scale with the
+# topology instead. The stage asks the two decisions of stages 6 to 11 again
+# there, at 0.5 % where the solver can no longer buy time by stopping early:
+# does one thread per run still win on core seconds, and is cuts = 0 still the
+# fastest arm
+NL_CASE = "nl_node"
+
+# The hard configuration of that case: a binary per arc from the minimum size,
+# a binary per arc and timestep from the precise bidirectionality, and a big M
+# on the arc capex
+NL_KNOBS = {
+    "bidirectional_precise": 1,
+    "pipeline_size_min": 250,
+    "pipeline_capex": "fixed_plus_linear",
+}
+
+# Stage 12, the cut question, which runs first and is the cheap one. cuts = 0
+# was worth x0.43 on four_node at 2 %, and stage 11 then showed that part of
+# that was a 1.2 % worse solution rather than a faster one. At 0.5 % that
+# escape is closed. Two resolutions and two thread counts are enough to say
+# whether it is still a win here
+NL_CUT_TYPICALDAYS = [4, 15]
+NL_CUT_ARMS = [{}, {"cuts": 0}]
+NL_CUT_THREAD_LEVELS = [1, 4]
+
+# Stage 13, the thread question, launched once stage 12 has been read. It is
+# the expensive one, so it runs a single cut setting rather than both
+NL_THREAD_TYPICALDAYS = [4, 15, 30]
+
+# 1 against 2 is the comparison stage 10 could not separate, x1.41 on a single
+# run against a noise floor of about x1.3. 4 is the old recommendation, 16 and
+# 48 give the core second curve its upper end
+NL_THREAD_LEVELS = [1, 2, 4, 16, 48]
+
+# td30 is the expensive end, so it only carries the levels the decision is
+# actually between
+NL_THREAD_LEVELS_LARGE = [1, 2, 4]
+
+# The arm stage 13 runs. The gurobi defaults until stage 12 says otherwise:
+# set it to {"cuts": 0} if that stage finds cuts off is the faster arm here
+# too. Every cell of stage 13 that shares a resolution and a thread count with
+# stage 12 is then the same run, and already_done skips it
+NL_THREAD_ARM = {}
+
 # Configurations of stages 10 and 11, cheapest first. td16_bp1 is left out on
 # purpose: at 3208 s a cell it costs more than these two together, and stages 8
 # and 9 already cover it. td0 is out for the same reason as everywhere else
@@ -377,7 +439,7 @@ def _cell_settings(options: dict, threads: int):
     :return: dict of settings
     """
     return {
-        "mipgap": 0.02,
+        "mipgap": MIPGAP,
         "time_limit": TIME_LIMIT,
         "threads": threads,
         "affinity_cores": 0,
@@ -396,6 +458,16 @@ STAGE_CELLS = {
     9: lambda: _gurobi_cut_runs("a2"),
     10: lambda: _thread_resolution_runs(),
     11: lambda: _cutpasses_runs(),
+    12: lambda: _nl_cut_runs(),
+    13: lambda: _nl_thread_runs(),
+}
+
+# The case study a stage runs, where it is not the one the study is built
+# around. The manifest has to spell the case name exactly as the run did, so
+# it cannot assume CASE
+STAGE_CASES = {
+    12: NL_CASE,
+    13: NL_CASE,
 }
 
 
@@ -446,7 +518,8 @@ def write_manifest(stage: int):
     for typicaldays, knobs, options, threads in STAGE_CELLS[stage]():
         settings = _cell_settings(options, threads)
         case_name = _build_case_name(
-            CASE, {"typicaldays": typicaldays, **knobs, **settings}
+            STAGE_CASES.get(stage, CASE),
+            {"typicaldays": typicaldays, **knobs, **settings},
         )
         folders = _folders_of(case_name)
         if not folders:
@@ -634,7 +707,7 @@ def stage_thread_ladder(dry_run: bool = False):
 
     for number, (typicaldays, knobs, threads, affinity) in enumerate(runs, start=1):
         settings = {
-            "mipgap": 0.02,
+            "mipgap": MIPGAP,
             "time_limit": TIME_LIMIT,
             "threads": threads,
             "affinity_cores": affinity,
@@ -1240,6 +1313,155 @@ def _slowest_section(case_runs):
     return lines
 
 
+def _nl_cut_runs():
+    """
+    Builds the cells of the cut stage of the nine node case study.
+
+    Cheapest first, so that a launch that does not finish leaves whole
+    resolutions behind rather than half of each.
+
+    :return: list of (typicaldays, knobs, options, threads) tuples
+    """
+    runs = []
+    for typicaldays in NL_CUT_TYPICALDAYS:
+        for options in NL_CUT_ARMS:
+            for threads in NL_CUT_THREAD_LEVELS:
+                runs.append((typicaldays, dict(NL_KNOBS), dict(options), threads))
+    return runs
+
+
+def _nl_thread_runs():
+    """
+    Builds the cells of the thread stage of the nine node case study.
+
+    One cut arm, NL_THREAD_ARM, chosen once stage 12 has been read. td30
+    carries only the thread counts the Snellius decision is between.
+
+    :return: list of (typicaldays, knobs, options, threads) tuples
+    """
+    runs = []
+    for typicaldays in NL_THREAD_TYPICALDAYS:
+        levels = (
+            NL_THREAD_LEVELS_LARGE
+            if typicaldays >= max(NL_THREAD_TYPICALDAYS)
+            else NL_THREAD_LEVELS
+        )
+        for threads in levels:
+            runs.append((typicaldays, dict(NL_KNOBS), dict(NL_THREAD_ARM), threads))
+    return runs
+
+
+def _run_nl_cells(runs: list, stage: int, label: str, title: str, dry_run: bool):
+    """
+    Runs the cells of one nine node stage.
+
+    Both stages of that case study are the same loop over a different
+    factorial, so they share it rather than having it written twice.
+
+    :param list runs: cells, as (typicaldays, knobs, options, threads) tuples
+    :param int stage: stage number, which the manifest is written for
+    :param str label: tag the log lines carry
+    :param str title: headline of the stage
+    :param bool dry_run: if True, the commands are only printed
+    :return: True if every run that was attempted succeeded
+    """
+    from run_benchmark import already_done
+
+    log(f"=== Stage {stage}: {title}, {len(runs)} runs ===")
+
+    ok = True
+    skipped = 0
+    produced = []
+
+    for number, (typicaldays, knobs, options, threads) in enumerate(runs, start=1):
+        settings = _cell_settings(options, threads)
+        spelled = ", ".join(f"{name} {value}" for name, value in options.items())
+        spelled = spelled or "defaults"
+
+        if not dry_run and already_done(NL_CASE, typicaldays, knobs, settings):
+            skipped += 1
+            log(
+                f"[{label}] run {number}/{len(runs)}: td{typicaldays}, "
+                f"{spelled}, {threads} threads, already done, skipped"
+            )
+            continue
+
+        command = [
+            sys.executable,
+            "run_benchmark.py",
+            "run",
+            "--case",
+            NL_CASE,
+            "--typicaldays",
+            str(typicaldays),
+            "--time-limit",
+            str(TIME_LIMIT),
+            "--threads",
+            str(threads),
+        ]
+        for name, value in options.items():
+            command += ["--set", f"{name}={value}"]
+        for knob, value in knobs.items():
+            command += ["--set", f"{knob}={value}"]
+
+        log(
+            f"[{label}] run {number}/{len(runs)}: td{typicaldays}, "
+            f"{spelled}, {threads} threads"
+        )
+        ok &= run(command, dry_run, produced)
+
+    if not dry_run:
+        log(f"[{label}] {skipped} of {len(runs)} runs were already done")
+        write_manifest(stage)
+        run([sys.executable, "run_benchmark.py", "collect"], dry_run)
+
+    return ok
+
+
+def stage_nl_cuts(dry_run: bool = False):
+    """
+    Asks whether cuts = 0 is still the faster arm on the nine node case study.
+
+    The first of the two stages of that case study and the cheap one. Both
+    recommendations the study makes were measured on four_node at a 2 % gap,
+    where an arm could buy time by stopping at a looser bound. This runs the
+    two arms at two resolutions and two thread counts, at 0.5 %.
+
+    :param bool dry_run: if True, the commands are only printed
+    :return: True if every run that was attempted succeeded
+    """
+    return _run_nl_cells(
+        _nl_cut_runs(),
+        12,
+        "NL_CUTS",
+        f"{NL_CASE}, cuts by threads, {len(NL_CUT_TYPICALDAYS)} resolutions",
+        dry_run,
+    )
+
+
+def stage_nl_threads(dry_run: bool = False):
+    """
+    The thread ladder of the nine node case study.
+
+    Launched once stage 12 has been read, with NL_THREAD_ARM set to whichever
+    cut setting that stage favoured. The question is the one stage 10 answered
+    on four_node: how many core seconds a run costs at each thread count, and
+    therefore how many cores a cluster job should ask for.
+
+    :param bool dry_run: if True, the commands are only printed
+    :return: True if every run that was attempted succeeded
+    """
+    arm = ", ".join(f"{name} {value}" for name, value in NL_THREAD_ARM.items())
+    return _run_nl_cells(
+        _nl_thread_runs(),
+        13,
+        "NL_THREADS",
+        f"{NL_CASE}, thread ladder at {arm or 'the defaults'}, "
+        f"{len(NL_THREAD_TYPICALDAYS)} resolutions",
+        dry_run,
+    )
+
+
 STAGES = {
     0: stage_sizes,
     1: stage_matrix,
@@ -1253,6 +1475,8 @@ STAGES = {
     9: lambda dry_run=False: stage_gurobi_cuts(dry_run, part="a2"),
     10: stage_thread_resolution,
     11: stage_cutpasses,
+    12: stage_nl_cuts,
+    13: stage_nl_threads,
 }
 
 # The thread ladder answers a question about the machine rather than about the

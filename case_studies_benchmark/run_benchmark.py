@@ -116,9 +116,23 @@ def _pin_to_cores(n_cores: int):
     print(f"[AFFINITY] pinned to {len(cores)} cores: {cores}")
 
 
+# The optimality gap every run of the study is solved to, since 2026-09-21.
+# It used to be 2 %, and at 2 % the arms of a comparison do not race to the
+# same answer: a run stops at the first incumbent that puts the gap under the
+# tolerance, so a configuration that reaches a tighter bound sooner does not
+# finish sooner, it finishes on a better solution. Stage 11 made that visible,
+# with cuts off landing 1.2 % above the best objective in three cells of four.
+# At 0.5 % the arms end close enough together for a runtime to mean something
+MIPGAP = 0.005
+
 # Settings that are left out of the case name, as they end up as columns of
 # the dataset anyway and would only make the results folder name unreadable
 DEFAULT_SETTINGS = {
+    # Naming baseline, not the gap the study runs at. Everything from
+    # 2026-09-21 runs at MIPGAP, 0.5 %, and this entry deliberately stays at
+    # the 2 % the archive was measured at so that a tighter run carries
+    # gap0.005 in its case name. Setting both to 0.005 would give a 0.5 % run
+    # the same name as the 2 % run of stage 11 and already_done would skip it
     "mipgap": 0.02,
     "time_limit": 2,
     # 0 is every core of the machine. A run with a different number of threads
@@ -158,6 +172,8 @@ DEFAULT_SETTINGS = {
     "storage": "on",
     "storage_precise": 0,
     "pv": "on",
+    "backbone": "off",
+    "compression": "off",
 }
 
 
@@ -173,6 +189,8 @@ KNOB_CODES = {
     "pipeline_size_min": "sm",
     "storage": "st",
     "storage_precise": "sp",
+    "backbone": "bb",
+    "compression": "cmp",
     "pv": "pv",
     "carbon_price": "co2",
     "mipgap": "gap",
@@ -247,6 +265,16 @@ KNOB_LEVELS = {
     "network": {
         "typicaldays_method": [1, 2],
         "carbon_price": [0, 100],
+    },
+    # The knobs of nl_node are the structural ones only. Its point is the
+    # topology, so the knobs that vary a profile are left out and the ones
+    # that put binaries on an arc are kept
+    "nl_node": {
+        "bidirectional_precise": [0, 1],
+        "pipeline_size_min": [0, 250],
+        "pipeline_capex": ["linear", "fixed_plus_linear"],
+        "compression": ["off", "on"],
+        "storage": ["off", "on"],
     },
 }
 
@@ -579,7 +607,7 @@ def _add_case_arguments(parser, sweep: bool = False):
         )
     else:
         parser.add_argument("--typicaldays", type=int, default=30)
-    parser.add_argument("--mipgap", type=float, default=0.02)
+    parser.add_argument("--mipgap", type=float, default=MIPGAP)
     parser.add_argument(
         "--time-limit",
         dest="time_limit",
