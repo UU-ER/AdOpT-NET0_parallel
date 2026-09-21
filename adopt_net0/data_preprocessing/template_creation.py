@@ -405,6 +405,10 @@ def initialize_configuration_templates() -> dict:
                 "options": [-1, 0, 1, 2, 3],
                 "value": -1,
             },
+            "cutpasses": {
+                "description": "Maximum number of cutting plane passes at the root, -1 for automatic.",
+                "value": -1,
+            },
             "crossover": {
                 "description": "Controls the crossover that turns the barrier "
                 "solution into a basic one. 0 skips it, which is only possible "

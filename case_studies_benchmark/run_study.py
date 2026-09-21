@@ -34,6 +34,14 @@ Stages:
               solve goes on this model family, so these options have far more
               time in scope than the root algorithm does
 9. cuts a2    the same on two more configurations
+10. threads   the thread counts between the levels of stages 6 to 9. Runtime
+              is bought between 1 and 4 threads and memory triples between 4
+              and 16, and neither edge is located. The level that comes out of
+              this stage is the one a cluster job asks for
+11. cutpasses how many rounds of the root cut loop are worth running, against
+              turning the cuts off altogether. Stages 8 and 9 found cuts = 0
+              worth a factor two, and the node logs say why: the first pass
+              carries the bound and the rest are nearly free of it
 
 Examples::
 
@@ -43,6 +51,7 @@ Examples::
     python run_study.py --stages 5          # only the thread ladder
     python run_study.py --stages 6          # gurobi options crossed with threads
     python run_study.py --stages 6 --dry-run
+    python run_study.py --stages 10 11      # the follow-up of 2026-09-21
 """
 
 import argparse
@@ -230,6 +239,40 @@ GUROBI_CONFIGS = {
 THREAD_LADDER_PINNED = [16, 24]
 THREAD_LADDER_PINNED_CONFIGS = [0, 1]
 
+# Stage 10. The thread recommendation rests on four levels, 1, 4, 16 and 48,
+# and both of the things worth knowing sit between them. Runtime is bought
+# between 1 and 4, td4 244 s to 182 s and td16 1731 s to 1224 s, and nothing
+# is bought above 4. Memory triples between 4 and 16, td16 1638 MB to 4476 MB.
+# Neither edge is located, and the level that comes out of this stage is what
+# a cluster job asks for.
+THREAD_RESOLUTION_LEVELS = [2, 3, 6, 8, 12]
+
+# Stage 11. Read out of the node log of every default cell of stages 6 to 9:
+# the first cut pass moves the bound by 0.33 to 0.39 %, the twenty-five to
+# fifty-seven passes after it by 0.03 to 0.23 %, and those cost a quarter to a
+# half of the whole solve. That is gurobi's own stated trigger for CutPasses.
+#
+# It should beat cuts = 0, which wins the same time by skipping every pass
+# including the one that pays, and therefore stops at a looser gap, 1.42 %
+# against 0.97 % inside the same 2 % tolerance.
+GUROBI_CUTPASSES_LEVELS = [1, 2, 5, -1]
+
+# The arm cuts = 0 is compared against, run inside this stage rather than read
+# out of stages 8 and 9. Those runs are archived, which is to say invisible to
+# already_done, and a baseline measured in the same campaign is worth the two
+# cells it costs
+GUROBI_CUTPASSES_REFERENCES = [{"cuts": 0}]
+
+GUROBI_CUTPASSES_THREAD_LEVELS = [4, 48]
+
+# Configurations of stages 10 and 11, cheapest first. td16_bp1 is left out on
+# purpose: at 3208 s a cell it costs more than these two together, and stages 8
+# and 9 already cover it. td0 is out for the same reason as everywhere else
+RESOLUTION_CONFIGS = [
+    {"typicaldays": 4, "knobs": {}},
+    {"typicaldays": 16, "knobs": {}},
+]
+
 
 def log(message: str):
     """
@@ -351,18 +394,25 @@ STAGE_CELLS = {
     7: lambda: _gurobi_thread_runs("a2"),
     8: lambda: _gurobi_cut_runs("a1"),
     9: lambda: _gurobi_cut_runs("a2"),
+    10: lambda: _thread_resolution_runs(),
+    11: lambda: _cutpasses_runs(),
 }
 
 
 def _folders_of(case_name: str):
     """
-    Finished result folders of a case name
+    Finished result folders of a case name.
+
+    Archived runs are included, so a manifest can be written for a stage whose
+    results have already been filed away, which is the usual case.
 
     :param str case_name: case name to look for
     :return: sorted list of folder names, oldest first
     """
+    from run_benchmark import run_folders
+
     found = []
-    for folder in RESULTS_PATH.glob(f"*_{case_name}*"):
+    for folder in run_folders(RESULTS_PATH):
         without_timestamp = folder.name.split("_", 1)[-1]
         without_counter = re.sub(r"-\d+$", "", without_timestamp)
         if without_counter != case_name:
@@ -383,7 +433,7 @@ def write_manifest(stage: int):
     A cell shared with another stage, such as the all default cell, is listed
     by both. That is correct: it is one run, and both stages use it.
 
-    :param int stage: stage number, 6 to 9
+    :param int stage: stage number, 6 to 11
     :return: Path of the manifest, or None if the stage has no cells
     """
     from run_benchmark import _build_case_name
@@ -821,6 +871,178 @@ def stage_gurobi_cuts(dry_run: bool = False, part: str = "a1"):
     return ok
 
 
+def _thread_resolution_runs():
+    """
+    Builds the cells of the thread resolution ladder
+
+    :return: list of (typicaldays, knobs, options, threads) tuples
+    """
+    runs = []
+    for config in RESOLUTION_CONFIGS:
+        for threads in THREAD_RESOLUTION_LEVELS:
+            runs.append((config["typicaldays"], config["knobs"], {}, threads))
+    return runs
+
+
+def stage_thread_resolution(dry_run: bool = False):
+    """
+    Fills in the thread counts between the levels the study already has.
+
+    Everything is at the solver defaults: the question is about the machine
+    and the thread count, not about an option, and stages 6 to 9 showed
+    nothing interacting with the thread count anyway.
+
+    :param bool dry_run: if True, the commands are only printed
+    :return: True if every run that was attempted succeeded
+    """
+    from run_benchmark import already_done
+
+    runs = _thread_resolution_runs()
+    log(
+        f"=== Stage 10: thread resolution, {len(RESOLUTION_CONFIGS)} "
+        f"configurations, {len(runs)} runs ==="
+    )
+
+    ok = True
+    skipped = 0
+    produced = []
+
+    for number, (typicaldays, knobs, options, threads) in enumerate(runs, start=1):
+        settings = _cell_settings(options, threads)
+
+        if not dry_run and already_done(CASE, typicaldays, knobs, settings):
+            skipped += 1
+            log(
+                f"[RESOLUTION] run {number}/{len(runs)}: td{typicaldays}, "
+                f"{threads} threads, already done, skipped"
+            )
+            continue
+
+        command = [
+            sys.executable,
+            "run_benchmark.py",
+            "run",
+            "--case",
+            CASE,
+            "--typicaldays",
+            str(typicaldays),
+            "--time-limit",
+            str(TIME_LIMIT),
+            "--threads",
+            str(threads),
+        ]
+        for knob, value in knobs.items():
+            command += ["--set", f"{knob}={value}"]
+
+        log(
+            f"[RESOLUTION] run {number}/{len(runs)}: td{typicaldays}, "
+            f"{threads} threads"
+        )
+        ok &= run(command, dry_run, produced)
+
+    if not dry_run:
+        log(f"[RESOLUTION] {skipped} of {len(runs)} runs were already done")
+        write_manifest(10)
+        run([sys.executable, "run_benchmark.py", "collect"], dry_run)
+
+    return ok
+
+
+def _cutpasses_runs():
+    """
+    Builds the cells of the cut pass count by thread count factorial
+
+    The reference arms are part of the factorial rather than a separate stage,
+    so that cuts = 0, the default and every CutPasses level are measured in one
+    campaign and can be compared without reaching into an archive.
+
+    :return: list of (typicaldays, knobs, options, threads) tuples
+    """
+    arms = [{"cutpasses": level} for level in GUROBI_CUTPASSES_LEVELS]
+    arms += GUROBI_CUTPASSES_REFERENCES
+
+    runs = []
+    for config in RESOLUTION_CONFIGS:
+        for options in arms:
+            for threads in GUROBI_CUTPASSES_THREAD_LEVELS:
+                runs.append(
+                    (
+                        config["typicaldays"],
+                        config["knobs"],
+                        dict(options),
+                        threads,
+                    )
+                )
+    return runs
+
+
+def stage_cutpasses(dry_run: bool = False):
+    """
+    Crosses the number of root cut passes with the thread count.
+
+    cutpasses = -1 is the gurobi default and therefore also the baseline cell
+    of the stage, spelled exactly like the all default cell of stage 8, so
+    already_done shares it if it is still visible.
+
+    :param bool dry_run: if True, the commands are only printed
+    :return: True if every run that was attempted succeeded
+    """
+    from run_benchmark import already_done
+
+    runs = _cutpasses_runs()
+    log(
+        f"=== Stage 11: root cut passes by threads, "
+        f"{len(RESOLUTION_CONFIGS)} configurations, {len(runs)} runs ==="
+    )
+
+    ok = True
+    skipped = 0
+    produced = []
+
+    for number, (typicaldays, knobs, options, threads) in enumerate(runs, start=1):
+        settings = _cell_settings(options, threads)
+        spelled = ", ".join(f"{name} {value}" for name, value in options.items())
+
+        if not dry_run and already_done(CASE, typicaldays, knobs, settings):
+            skipped += 1
+            log(
+                f"[CUTPASSES] run {number}/{len(runs)}: td{typicaldays}, "
+                f"{spelled}, {threads} threads, already done, skipped"
+            )
+            continue
+
+        command = [
+            sys.executable,
+            "run_benchmark.py",
+            "run",
+            "--case",
+            CASE,
+            "--typicaldays",
+            str(typicaldays),
+            "--time-limit",
+            str(TIME_LIMIT),
+            "--threads",
+            str(threads),
+        ]
+        for name, value in options.items():
+            command += ["--set", f"{name}={value}"]
+        for knob, value in knobs.items():
+            command += ["--set", f"{knob}={value}"]
+
+        log(
+            f"[CUTPASSES] run {number}/{len(runs)}: td{typicaldays}, "
+            f"{spelled}, {threads} threads"
+        )
+        ok &= run(command, dry_run, produced)
+
+    if not dry_run:
+        log(f"[CUTPASSES] {skipped} of {len(runs)} runs were already done")
+        write_manifest(11)
+        run([sys.executable, "run_benchmark.py", "collect"], dry_run)
+
+    return ok
+
+
 def stage_report(dry_run: bool = False):
     """
     Collects the runs, draws the figures and writes the summary
@@ -1029,6 +1251,8 @@ STAGES = {
     7: lambda dry_run=False: stage_gurobi_threads(dry_run, part="a2"),
     8: lambda dry_run=False: stage_gurobi_cuts(dry_run, part="a1"),
     9: lambda dry_run=False: stage_gurobi_cuts(dry_run, part="a2"),
+    10: stage_thread_resolution,
+    11: stage_cutpasses,
 }
 
 # The thread ladder answers a question about the machine rather than about the

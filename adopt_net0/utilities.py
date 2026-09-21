@@ -22,6 +22,11 @@ GUROBI_PARAMETERS = {
     "intfeastol": "IntFeasTol",
     "feastol": "FeasibilityTol",
     "cuts": "Cuts",
+    # How many rounds the cut loop is allowed, rather than how hard each round
+    # tries. On this model family the first pass carries the bound and the
+    # twenty-five to fifty that follow are nearly free of it, so the count is
+    # the sharper knob of the two
+    "cutpasses": "CutPasses",
     "numericfocus": "NumericFocus",
     # The root relaxation. On a MIP the root goes to a single thread and is
     # where most of the time is spent, so the algorithm that solves it, and the

@@ -65,12 +65,13 @@ SEEDED_FROM = "20260911"
 # configuration. Stripping them leaves the configuration itself, which is what
 # the panels are grouped by
 SETTING_TOKENS = re.compile(
-    r"_(thr|aff|mth|xov|bh|scl|cm|nm|pre|cut|mf|heu|nrh|nf|lpw|bd)-?[\d.]+"
+    r"_(thr|aff|mth|xov|bh|scl|cm|nm|pre|cut|cp|mf|heu|nrh|nf|lpw|bd)-?[\d.]+"
 )
 
 OPTION_LABELS = {
     "gurobi_method": "Method",
     "gurobi_cuts": "Cuts",
+    "gurobi_cutpasses": "CutPasses",
     "gurobi_mipfocus": "MIPFocus",
     "gurobi_lpwarmstart": "LPWarmStart",
     "gurobi_presolve": "Presolve",
@@ -100,6 +101,9 @@ LEVEL_NAMES = {
         2: "basis",
     },
     "gurobi_mipfocus": {0: "balanced", 1: "feasibility", 2: "optimality", 3: "bound"},
+    # -1 is the gurobi default, which on this model family means twenty-five to
+    # fifty-seven passes. The finite levels are counts, so they label themselves
+    "gurobi_cutpasses": {-1: "auto", 1: "1 pass", 2: "2 passes", 5: "5 passes"},
 }
 
 RESPONSES = [
@@ -236,6 +240,11 @@ def _backfill_root_node_end(dataset: pd.DataFrame, results_path: Path):
     path is tried first, and the folder name under the results directory is
     tried after it, which is what makes this work from a different machine.
 
+    A finished sweep is archived into a subfolder, and the stages of one study
+    into a subfolder each, so the name is looked for at any depth below the
+    results directory and not only directly under it. The index is built once,
+    because walking a network share per run is slow.
+
     :param pd.DataFrame dataset: dataset to fill in place
     :param Path results_path: results directory to fall back to
     """
@@ -248,13 +257,19 @@ def _backfill_root_node_end(dataset: pd.DataFrame, results_path: Path):
     if missing.empty:
         return
 
+    archived = {
+        log.parent.name: log for log in Path(results_path).rglob("*/solver_log.txt")
+    }
+
     filled = 0
     unreachable = 0
     for index, row in missing.iterrows():
         recorded = str(row["folder"]).replace("\\", "/").rstrip("/")
+        name = recorded.rsplit("/", 1)[-1]
         candidates = [
             Path(recorded) / "solver_log.txt",
-            results_path / recorded.rsplit("/", 1)[-1] / "solver_log.txt",
+            results_path / name / "solver_log.txt",
+            archived.get(name, results_path / "does not exist"),
         ]
         log_path = next((path for path in candidates if path.is_file()), None)
         if log_path is None:

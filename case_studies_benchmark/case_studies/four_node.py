@@ -85,6 +85,7 @@ def setup(
     nodemethod: int = -1,
     presolve: int = -1,
     cuts: int = -1,
+    cutpasses: int = -1,
     mipfocus: int = 0,
     heuristics: float = 0.05,
     norelheurtime: float = 0,
@@ -134,6 +135,9 @@ def setup(
     :param int nodemethod: gurobi NodeMethod, the algorithm at the nodes
     :param int presolve: gurobi Presolve
     :param int cuts: gurobi Cuts
+    :param int cutpasses: gurobi CutPasses, the maximum number of cut
+        rounds at the root. The first round carries nearly all of the
+        bound on this model family and the rest cost a third of the solve
     :param int mipfocus: gurobi MIPFocus
     :param float heuristics: gurobi Heuristics
     :param float norelheurtime: gurobi NoRelHeurTime in seconds
@@ -172,6 +176,7 @@ def setup(
             "nodemethod": nodemethod,
             "presolve": presolve,
             "cuts": cuts,
+            "cutpasses": cutpasses,
             "mipfocus": mipfocus,
             "heuristics": heuristics,
             "norelheurtime": norelheurtime,
