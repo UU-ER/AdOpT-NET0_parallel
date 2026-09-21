@@ -50,6 +50,10 @@ Stages:
 13. nl threads the thread ladder of the same case study, at the cut setting
               stage 12 favoured. Answers on a topology driven model what stage
               10 answered on four_node: how many cores a run should ask for
+14. contention a fixed core budget filled with jobs of 1, 2, 3, 4 and 6
+              threads, run concurrently. Every other stage measures runs that
+              had the machine to themselves, so the throughput argument for
+              thin jobs is arithmetic. This measures it
 
 Examples::
 
@@ -62,6 +66,7 @@ Examples::
     python run_study.py --stages 10 11      # the follow-up of 2026-09-21
     python run_study.py --stages 12         # the nine node case study, cuts
     python run_study.py --stages 13         # the same case study, threads
+    python run_study.py --stages 14         # what a full machine delivers
 """
 
 import argparse
@@ -97,7 +102,11 @@ CASE = "four_node"
 from run_benchmark import MIPGAP
 
 # Hours. A run that hits this limit still gives a valid resource measurement,
-# it just does not reach the optimum, and the sweep carries on
+# it just does not reach the optimum, and the sweep carries on. It reaches the
+# case name, so raising it makes a cell a different run rather than the same
+# one measured for longer, and already_done will not match the old cells.
+# Overridden from the command line with --time-limit, which is how the nine
+# node stages get their four hours without the four_node archive moving
 TIME_LIMIT = 2
 
 # Threads the solver may use. 0 is every core of the machine, which is what the
@@ -315,11 +324,32 @@ NL_THREAD_TYPICALDAYS = [4, 15, 30]
 # 1 against 2 is the comparison stage 10 could not separate, x1.41 on a single
 # run against a noise floor of about x1.3. 4 is the old recommendation, 16 and
 # 48 give the core second curve its upper end
-NL_THREAD_LEVELS = [1, 2, 4, 16, 48]
+# 3 and 6 are in because stage 10 put the memory cliff exactly between them,
+# a factor 2.7 in one step from 4 to 6 threads, and because a 48 core budget
+# packs into 16 jobs of 3 or 8 of 6. Those are candidate answers, so they need
+# a measured core second cost rather than an interpolated one
+NL_THREAD_LEVELS = [1, 2, 3, 4, 6, 16, 48]
 
-# td30 is the expensive end, so it only carries the levels the decision is
-# actually between
-NL_THREAD_LEVELS_LARGE = [1, 2, 4]
+# td15 drops the two levels that are already known to be bad and expensive,
+# keeping the small counts the packing decision is actually between
+NL_THREAD_LEVELS_MEDIUM = [1, 2, 3, 4, 6]
+
+# td30 is the expensive end. td15 at 1 thread took 2.84 h, so a td30 cell at 1
+# thread would sit on the time limit: the ladder there starts at 2
+NL_THREAD_LEVELS_LARGE = [2, 4]
+
+# Stage 14, the packing question, and the one thing the core second
+# arithmetic cannot answer. Every run of this study so far had the machine to
+# itself, so "one thread per job wins on core seconds" is arithmetic over solo
+# runs: it assumes N jobs do not get in each other's way. This fills a fixed
+# core budget with jobs of k threads, 48 of 1, 24 of 2, 16 of 3, 12 of 4 and 8
+# of 6, and measures the throughput each packing actually delivers
+CONTENTION_CORE_BUDGET = 48
+CONTENTION_THREAD_LEVELS = [1, 2, 3, 4, 6]
+
+# The cheap resolution, since the arms are what is being compared and a pack
+# has to be run several times over. td4 solo is 6 to 8 minutes a run
+CONTENTION_TYPICALDAYS = 4
 
 # The arm stage 13 runs. The gurobi defaults until stage 12 says otherwise:
 # set it to {"cuts": 0} if that stage finds cuts off is the faster arm here
@@ -1339,13 +1369,14 @@ def _nl_thread_runs():
 
     :return: list of (typicaldays, knobs, options, threads) tuples
     """
+    ladders = {
+        min(NL_THREAD_TYPICALDAYS): NL_THREAD_LEVELS,
+        max(NL_THREAD_TYPICALDAYS): NL_THREAD_LEVELS_LARGE,
+    }
+
     runs = []
     for typicaldays in NL_THREAD_TYPICALDAYS:
-        levels = (
-            NL_THREAD_LEVELS_LARGE
-            if typicaldays >= max(NL_THREAD_TYPICALDAYS)
-            else NL_THREAD_LEVELS
-        )
+        levels = ladders.get(typicaldays, NL_THREAD_LEVELS_MEDIUM)
         for threads in levels:
             runs.append((typicaldays, dict(NL_KNOBS), dict(NL_THREAD_ARM), threads))
     return runs
@@ -1418,6 +1449,104 @@ def _run_nl_cells(runs: list, stage: int, label: str, title: str, dry_run: bool)
     return ok
 
 
+def _contention_packs():
+    """
+    Builds the packings of the contention stage.
+
+    One entry per thread count, each filling the core budget as evenly as the
+    count divides it.
+
+    :return: list of (threads, jobs) tuples
+    """
+    return [
+        (threads, CONTENTION_CORE_BUDGET // threads)
+        for threads in CONTENTION_THREAD_LEVELS
+    ]
+
+
+def stage_contention(dry_run: bool = False):
+    """
+    Fills the machine with jobs and measures what each packing delivers.
+
+    The study recommends one thread per job on the strength of core seconds
+    measured on runs that each had the machine to themselves. That is an
+    assumption, not a measurement: 48 jobs at one thread share the memory
+    bandwidth and the last level cache of one machine, and 8 jobs at six
+    threads do not share them in the same way. This runs each packing for
+    real, on the same configuration, and reports jobs per hour.
+
+    Every job gets its own input data folder, since setup rewrites it on each
+    call, and no job collects: the dataset is written once at the end, as
+    concurrent writers would race on it.
+
+    :param bool dry_run: if True, the commands are only printed
+    :return: True if every pack that was attempted succeeded
+    """
+    packs = _contention_packs()
+    log(
+        f"=== Stage 14: {NL_CASE} contention, {CONTENTION_CORE_BUDGET} cores, "
+        f"{len(packs)} packings ==="
+    )
+
+    ok = True
+
+    for threads, jobs in packs:
+        label = f"pack{threads}x{jobs}"
+        log(
+            f"[CONTENTION] {label}: {jobs} concurrent jobs of {threads} "
+            f"threads, td{CONTENTION_TYPICALDAYS}"
+        )
+
+        commands = []
+        for job in range(1, jobs + 1):
+            command = [
+                sys.executable,
+                "run_benchmark.py",
+                "run",
+                "--case",
+                NL_CASE,
+                "--typicaldays",
+                str(CONTENTION_TYPICALDAYS),
+                "--time-limit",
+                str(TIME_LIMIT),
+                "--threads",
+                str(threads),
+                "--case-name",
+                f"{NL_CASE}_{label}_job{job:02d}",
+                "--input-suffix",
+                f"job{job:02d}",
+                "--no-collect",
+            ]
+            for knob, value in NL_KNOBS.items():
+                command += ["--set", f"{knob}={value}"]
+            commands.append(command)
+
+        if dry_run:
+            print(f"  would run {jobs} copies of:")
+            print("    " + " ".join(str(part) for part in commands[0]))
+            continue
+
+        start = time.time()
+        processes = [
+            subprocess.Popen(command, cwd=str(BASE)) for command in commands
+        ]
+        codes = [process.wait() for process in processes]
+        makespan = time.time() - start
+
+        failed = sum(1 for code in codes if code != 0)
+        ok &= failed == 0
+        log(
+            f"[CONTENTION] {label}: makespan {makespan / 60:.1f} min, "
+            f"{jobs / (makespan / 3600):.1f} jobs per hour, "
+            f"{failed} of {jobs} failed"
+        )
+
+    if not dry_run:
+        run([sys.executable, "run_benchmark.py", "collect"], dry_run)
+
+    return ok
+
+
 def stage_nl_cuts(dry_run: bool = False):
     """
     Asks whether cuts = 0 is still the faster arm on the nine node case study.
@@ -1477,6 +1606,7 @@ STAGES = {
     11: stage_cutpasses,
     12: stage_nl_cuts,
     13: stage_nl_threads,
+    14: stage_contention,
 }
 
 # The thread ladder answers a question about the machine rather than about the
@@ -1489,7 +1619,7 @@ def main():
     """
     Command line interface of the study
     """
-    global THREADS
+    global THREADS, TIME_LIMIT
 
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(
@@ -1508,6 +1638,15 @@ def main():
         help="threads the solver may use, 0 for every core of the machine. "
         "Runs at different thread counts live side by side in the results "
         "folder, as the thread count is part of the case name",
+    )
+    parser.add_argument(
+        "--time-limit",
+        dest="time_limit",
+        type=float,
+        default=TIME_LIMIT,
+        help="hours a single run may take before the solver gives up. It is "
+        "part of the case name, so a stage run at a different limit does not "
+        "skip the runs of the first one as already done",
     )
     parser.add_argument(
         "--dry-run",
@@ -1530,6 +1669,7 @@ def main():
             write_manifest(stage)
         return
     THREADS = args.threads
+    TIME_LIMIT = args.time_limit
 
     started = time.time()
     if not args.dry_run:
