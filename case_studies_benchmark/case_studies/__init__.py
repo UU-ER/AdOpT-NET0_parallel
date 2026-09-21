@@ -1,8 +1,10 @@
 from . import network
 from . import four_node
+from . import nl_node
 
 # Every case study module needs a NAME attribute and a setup function
 CASE_STUDIES = {
     network.NAME: network,
     four_node.NAME: four_node,
+    nl_node.NAME: nl_node,
 }
