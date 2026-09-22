@@ -387,14 +387,24 @@ CONTENTION_TYPICALDAYS = 4
 # at a budget that is always spent in full; this asks whether spending it in
 # full is right at all.
 #
-# The levels are fractions of the core budget rather than worker counts, so
-# that the two thread counts are compared at the same amount of machine:
-# 0.5 leaves half the cores idle, 1.0 fills them exactly and 1.33
-# oversubscribes by a third. Oversubscription is in on purpose, because a run
-# is not solver all the way through: stage 14 measured the data reading and
-# the model construction slowing by x22 and x10 in a full pack, and those are
-# phases that wait rather than compute, so they interleave
-CONTENTION_FILL_LEVELS = [0.5, 0.75, 1.0, 1.33]
+# Fractions of the core budget rather than worker counts, so that the two
+# thread counts are compared at the same amount of machine: 0.5 leaves half
+# the cores idle, 1.0 fills them exactly and 1.33 oversubscribes by a third.
+# Oversubscription is in on purpose, because a run is not solver all the way
+# through: stage 14 measured the reading of the input and the building of the
+# model slowing by x44 and x9 in a full pack, and those wait rather than
+# compute, so they interleave.
+#
+# Two threads is the arm stage 14 chose, 24 jobs of two delivering 72.1 runs
+# an hour against 46.0 for 48 jobs of one, so it carries the fine grid: the
+# maximum is expected between three quarters and full, and the packs there
+# are the cheap ones, about a quarter of an hour each. One thread keeps the
+# coarse grid, enough to say whether it loses at every fill or only at a full
+# machine, and its packs cost three to four times as much
+CONTENTION_FILL_LEVELS = {
+    2: [0.5, 0.75, 0.83, 0.92, 1.0, 1.08, 1.33],
+    1: [0.5, 0.75, 1.0, 1.33],
+}
 
 # Threads a job asks for, cheapest arm first. Two comes first because stage
 # 14 chose it: 24 jobs of two threads delivered 72.1 runs an hour against
@@ -1694,11 +1704,13 @@ def stage_worker_count(dry_run: bool = False):
     :param bool dry_run: if True, the commands are only printed
     :return: True if every pack that was attempted succeeded
     """
-    packs = [
-        (threads, max(1, round(CONTENTION_CORE_BUDGET * fill / threads)))
-        for threads in CONTENTION_WORKER_THREADS
-        for fill in CONTENTION_FILL_LEVELS
-    ]
+    packs = []
+    for threads in CONTENTION_WORKER_THREADS:
+        for fill in CONTENTION_FILL_LEVELS[threads]:
+            jobs = max(1, round(CONTENTION_CORE_BUDGET * fill / threads))
+            # Two fills a third of a core apart round to the same pack
+            if (threads, jobs) not in packs:
+                packs.append((threads, jobs))
 
     log(
         f"=== Stage 15: {NL_CASE} worker count on "
