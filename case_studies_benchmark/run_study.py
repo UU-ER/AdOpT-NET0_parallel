@@ -338,6 +338,25 @@ NL_THREAD_LEVELS_MEDIUM = [1, 2, 3, 4, 6]
 # thread would sit on the time limit: the ladder there starts at 2
 NL_THREAD_LEVELS_LARGE = [2, 4]
 
+# Hours, per resolution, for the nine node stages only, overriding TIME_LIMIT.
+# td15 at 4 threads took 1.3 h and at 1 thread 2.9 h, and td30 is the next
+# step up, so four hours would censor exactly the cells the stage is for. A
+# censored run still measures memory, but a runtime that is really "the limit"
+# cannot be compared against anything. The limit is part of the case name, so
+# td4 and td15 stay at whatever stage 12 ran them at and are skipped as
+# already done
+NL_TIME_LIMITS = {30: 8}
+
+
+def _nl_time_limit(typicaldays: int):
+    """
+    Hours a nine node cell of this resolution may take.
+
+    :param int typicaldays: number of typical days of the cell
+    :return: time limit in hours
+    """
+    return NL_TIME_LIMITS.get(typicaldays, TIME_LIMIT)
+
 # Stage 14, the packing question, and the one thing the core second
 # arithmetic cannot answer. Every run of this study so far had the machine to
 # itself, so "one thread per job wins on core seconds" is arithmetic over solo
@@ -457,7 +476,7 @@ def _result_folders():
     return {folder.name for folder in RESULTS_PATH.iterdir() if folder.is_dir()}
 
 
-def _cell_settings(options: dict, threads: int):
+def _cell_settings(options: dict, threads: int, time_limit: float = None):
     """
     Settings of one cell of a factorial.
 
@@ -466,11 +485,12 @@ def _cell_settings(options: dict, threads: int):
 
     :param dict options: solver options of the cell
     :param int threads: number of threads
+    :param float time_limit: hours the cell may take, TIME_LIMIT if not given
     :return: dict of settings
     """
     return {
         "mipgap": MIPGAP,
-        "time_limit": TIME_LIMIT,
+        "time_limit": TIME_LIMIT if time_limit is None else time_limit,
         "threads": threads,
         "affinity_cores": 0,
         "solver": "gurobi",
@@ -546,7 +566,11 @@ def write_manifest(stage: int):
     lines = []
     missing = 0
     for typicaldays, knobs, options, threads in STAGE_CELLS[stage]():
-        settings = _cell_settings(options, threads)
+        settings = _cell_settings(
+            options,
+            threads,
+            _nl_time_limit(typicaldays) if stage in STAGE_CASES else None,
+        )
         case_name = _build_case_name(
             STAGE_CASES.get(stage, CASE),
             {"typicaldays": typicaldays, **knobs, **settings},
@@ -1405,7 +1429,8 @@ def _run_nl_cells(runs: list, stage: int, label: str, title: str, dry_run: bool)
     produced = []
 
     for number, (typicaldays, knobs, options, threads) in enumerate(runs, start=1):
-        settings = _cell_settings(options, threads)
+        time_limit = _nl_time_limit(typicaldays)
+        settings = _cell_settings(options, threads, time_limit)
         spelled = ", ".join(f"{name} {value}" for name, value in options.items())
         spelled = spelled or "defaults"
 
@@ -1426,7 +1451,7 @@ def _run_nl_cells(runs: list, stage: int, label: str, title: str, dry_run: bool)
             "--typicaldays",
             str(typicaldays),
             "--time-limit",
-            str(TIME_LIMIT),
+            str(time_limit),
             "--threads",
             str(threads),
         ]
