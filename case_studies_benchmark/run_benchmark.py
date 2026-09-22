@@ -63,8 +63,11 @@ def run_case(case: str, **settings):
     case_study = CASE_STUDIES[case]
 
     # Input data of a case study is reused across runs, the results of every
-    # run go to their own folder
-    input_data_path = INPUT_DATA_PATH / case
+    # run go to their own folder. A suffix gives a run its own copy instead,
+    # which is what concurrent runs need: setup rewrites the folder on every
+    # call, so two runs sharing one would read each other's half written files
+    suffix = settings.pop("input_suffix", None)
+    input_data_path = INPUT_DATA_PATH / (f"{case}_{suffix}" if suffix else case)
     case_name = settings.pop("case_name", None) or _build_case_name(case, settings)
 
     # Pinning is a property of the process and not of the model, so it is
@@ -569,6 +572,10 @@ def main():
     # carbon_price only exists on the case studies that have it as a knob
     if "carbon_price" in knobs_of(args.case):
         settings["carbon_price"] = args.carbon_price
+
+    for name in ["case_name", "input_suffix"]:
+        if getattr(args, name, None):
+            settings[name] = getattr(args, name)
     settings.update(parse_overrides(args.case, args.overrides))
 
     if args.command == "matrix":
@@ -578,6 +585,8 @@ def main():
 
     if args.command == "run":
         run_case(args.case, typicaldays=args.typicaldays, **settings)
+        if getattr(args, "no_collect", False):
+            return
     else:
         # A failing run should not stop the sweep, the runs that did work are
         # still collected at the end
@@ -638,6 +647,30 @@ def _add_case_arguments(parser, sweep: bool = False):
     )
     parser.add_argument("--carbon-price", dest="carbon_price", type=float, default=0)
     parser.add_argument("--solver", default="gurobi")
+    if not sweep:
+        parser.add_argument(
+            "--case-name",
+            dest="case_name",
+            default=None,
+            help="name of the run, instead of the one built from the settings. "
+            "Concurrent copies of one configuration need it, as they would "
+            "otherwise all be spelled the same",
+        )
+        parser.add_argument(
+            "--input-suffix",
+            dest="input_suffix",
+            default=None,
+            help="write the input data to inputData/<case>_<suffix> rather "
+            "than to inputData/<case>. Concurrent runs need their own copy",
+        )
+        parser.add_argument(
+            "--no-collect",
+            dest="no_collect",
+            action="store_true",
+            help="do not rewrite benchmark_dataset.csv when the run is done. "
+            "Concurrent runs have to skip it, as they would race on the file, "
+            "and the caller collects once afterwards",
+        )
     parser.add_argument(
         "--sampling-interval", dest="sampling_interval", type=float, default=0.5
     )
