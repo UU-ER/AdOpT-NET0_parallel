@@ -66,6 +66,7 @@ Examples::
     python run_study.py --stages 10 11      # the follow-up of 2026-09-21
     python run_study.py --stages 12         # the nine node case study, cuts
     python run_study.py --stages 13         # the same case study, threads
+    python run_study.py --manifest 13       # its manifest, after the fact
     python run_study.py --stages 14         # what a full machine delivers
 """
 
@@ -338,14 +339,14 @@ NL_THREAD_LEVELS_MEDIUM = [1, 2, 3, 4, 6]
 # thread would sit on the time limit: the ladder there starts at 2
 NL_THREAD_LEVELS_LARGE = [2, 4]
 
-# Hours, per resolution, for the nine node stages only, overriding TIME_LIMIT.
-# td15 at 4 threads took 1.3 h and at 1 thread 2.9 h, and td30 is the next
-# step up, so four hours would censor exactly the cells the stage is for. A
-# censored run still measures memory, but a runtime that is really "the limit"
-# cannot be compared against anything. The limit is part of the case name, so
-# td4 and td15 stay at whatever stage 12 ran them at and are skipped as
-# already done
-NL_TIME_LIMITS = {30: 8}
+# Hours, per resolution, for the nine node stages. Every one of them is
+# spelled out rather than falling back to TIME_LIMIT, because the limit is
+# part of the case name: a cell looked up at a different limit from the one it
+# ran at is a different run, which silently re-runs it and writes an empty
+# manifest. Stages 12 and 13 ran td4 and td15 at four hours, so those stay at
+# four. td30 gets eight: td15 took 1.3 h at four threads and 2.9 h at one, and
+# four hours would censor exactly the cells the stage is for
+NL_TIME_LIMITS = {4: 4, 15: 4, 30: 8}
 
 
 def _nl_time_limit(typicaldays: int):
@@ -355,7 +356,12 @@ def _nl_time_limit(typicaldays: int):
     :param int typicaldays: number of typical days of the cell
     :return: time limit in hours
     """
-    return NL_TIME_LIMITS.get(typicaldays, TIME_LIMIT)
+    if typicaldays not in NL_TIME_LIMITS:
+        raise KeyError(
+            f"No time limit for td{typicaldays} in NL_TIME_LIMITS. Add one "
+            "rather than falling back, the limit is part of the case name"
+        )
+    return NL_TIME_LIMITS[typicaldays]
 
 # Stage 14, the packing question, and the one thing the core second
 # arithmetic cannot answer. Every run of this study so far had the machine to
@@ -1533,7 +1539,7 @@ def stage_contention(dry_run: bool = False):
                 "--typicaldays",
                 str(CONTENTION_TYPICALDAYS),
                 "--time-limit",
-                str(TIME_LIMIT),
+                str(_nl_time_limit(CONTENTION_TYPICALDAYS)),
                 "--threads",
                 str(threads),
                 "--case-name",
