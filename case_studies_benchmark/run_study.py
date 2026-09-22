@@ -405,7 +405,7 @@ CONTENTION_TYPICALDAYS = 4
 # above three quarters there would only measure the descent in detail
 CONTENTION_FILL_LEVELS = {
     2: [0.5, 0.75, 0.83, 0.92, 1.0, 1.08, 1.33],
-    1: [0.5, 0.625, 0.75, 0.875, 1.0, 1.33],
+    1: [0.5, 0.625, 0.75, 0.875, 0.9375, 1.0, 1.33],
 }
 
 # Threads a job asks for, cheapest arm first. Two comes first because stage
