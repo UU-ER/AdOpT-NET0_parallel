@@ -81,6 +81,7 @@ import datetime
 import re
 import json
 import platform
+import shutil
 import socket
 import subprocess
 import sys
@@ -1521,6 +1522,41 @@ def _contention_packs():
     ]
 
 
+def _prepare_input_folders(jobs: int):
+    """
+    Gives every job of a pack its own clean copy of the input data.
+
+    The jobs used to build their own copy, which meant as many concurrent
+    copytree calls of nineteen megabytes from one source on a network share
+    as there were jobs. That corrupts files: stage 14 lost a whole pack of
+    eight and stage 15 a whole pack of twelve to
+
+        zipfile.BadZipFile: Bad CRC-32 for file 'xl/worksheets/sheet1.xml'
+
+    and it does not heal, because a case study only copies its source data
+    when the folder has no Topology.json in it. So the copies are made here
+    instead, one after another, from a folder the case study has just built,
+    and any copy left over from an earlier pack is replaced rather than
+    trusted.
+
+    :param int jobs: how many copies are needed
+    """
+    from run_benchmark import CASE_STUDIES, INPUT_DATA_PATH
+
+    source = INPUT_DATA_PATH / NL_CASE
+    if not (source / "Topology.json").exists():
+        CASE_STUDIES[NL_CASE].setup(
+            source, RESULTS_PATH, typicaldays=CONTENTION_TYPICALDAYS
+        )
+
+    log(f"[PREPARE] copying the input data into {jobs} job folders")
+    for job in range(1, jobs + 1):
+        target = INPUT_DATA_PATH / f"{NL_CASE}_job{job:02d}"
+        if target.exists():
+            shutil.rmtree(target)
+        shutil.copytree(source, target)
+
+
 def _run_pack(threads: int, jobs: int, label: str, tag: str, dry_run: bool):
     """
     Runs one pack of concurrent jobs and logs what it delivered.
@@ -1548,6 +1584,9 @@ def _run_pack(threads: int, jobs: int, label: str, tag: str, dry_run: bool):
     # folder and no way to find out why
     log_path = BASE / "pack_logs"
     log_path.mkdir(exist_ok=True)
+
+    if not dry_run:
+        _prepare_input_folders(jobs)
 
     commands = []
     for job in range(1, jobs + 1):
