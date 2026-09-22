@@ -54,6 +54,10 @@ Stages:
               threads, run concurrently. Every other stage measures runs that
               had the machine to themselves, so the throughput argument for
               thin jobs is arithmetic. This measures it
+15. workers   how full to fill the machine: 12, 24, 36, 48 and 64 jobs of one
+              thread on 48 cores. Stage 14 always spends the whole budget,
+              this asks whether it should, since the jobs share one memory
+              system rather than oversubscribing the cores
 
 Examples::
 
@@ -68,6 +72,7 @@ Examples::
     python run_study.py --stages 13         # the same case study, threads
     python run_study.py --manifest 13       # its manifest, after the fact
     python run_study.py --stages 14         # what a full machine delivers
+    python run_study.py --stages 15         # how full to fill it
 """
 
 import argparse
@@ -375,6 +380,23 @@ CONTENTION_THREAD_LEVELS = [1, 2, 3, 4, 6]
 # The cheap resolution, since the arms are what is being compared and a pack
 # has to be run several times over. td4 solo is 6 to 8 minutes a run
 CONTENTION_TYPICALDAYS = 4
+
+# Stage 15, how full to fill the machine. Stage 14 asks how to shape the jobs
+# at a budget that is always spent in full; this asks whether spending it in
+# full is right at all. A job at one thread uses one core, so 48 of them do
+# not oversubscribe the cores, but they do share one memory system, and the
+# first pack of stage 14 suggests that is what costs: a run that takes 7.6
+# minutes alone took about 16 in a pack of 48.
+#
+# 64 is in on purpose. A run is not solver all the way through: reading the
+# data and building the model are single threaded and partly waiting, so more
+# jobs than cores can still pay if the serial phases interleave. The level
+# that wins is the one to put in the campaign runner
+CONTENTION_WORKER_LEVELS = [12, 24, 36, 48, 64]
+
+# Threads per job while the worker count is swept. One, because that is the
+# packing the throughput argument is about
+CONTENTION_WORKER_THREADS = 1
 
 # The arm stage 13 runs. The gurobi defaults until stage 12 says otherwise:
 # set it to {"cuts": 0} if that stage finds cuts off is the faster arm here
@@ -1495,6 +1517,70 @@ def _contention_packs():
     ]
 
 
+def _run_pack(threads: int, jobs: int, label: str, tag: str, dry_run: bool):
+    """
+    Runs one pack of concurrent jobs and logs what it delivered.
+
+    Every job gets its own input data folder, since setup rewrites it on each
+    call and two runs sharing one would read half written files, and no job
+    collects: concurrent writers would race on the dataset, so the caller
+    collects once afterwards.
+
+    :param int threads: threads each job asks for
+    :param int jobs: how many jobs run at the same time
+    :param str label: name the runs and the log lines carry
+    :param str tag: tag of the stage, for the log
+    :param bool dry_run: if True, the commands are only printed
+    :return: True if every job succeeded
+    """
+    log(
+        f"[{tag}] {label}: {jobs} concurrent jobs of {threads} "
+        f"thread{'s' if threads > 1 else ''}, td{CONTENTION_TYPICALDAYS}"
+    )
+
+    commands = []
+    for job in range(1, jobs + 1):
+        command = [
+            sys.executable,
+            "run_benchmark.py",
+            "run",
+            "--case",
+            NL_CASE,
+            "--typicaldays",
+            str(CONTENTION_TYPICALDAYS),
+            "--time-limit",
+            str(_nl_time_limit(CONTENTION_TYPICALDAYS)),
+            "--threads",
+            str(threads),
+            "--case-name",
+            f"{NL_CASE}_{label}_job{job:02d}",
+            "--input-suffix",
+            f"job{job:02d}",
+            "--no-collect",
+        ]
+        for knob, value in NL_KNOBS.items():
+            command += ["--set", f"{knob}={value}"]
+        commands.append(command)
+
+    if dry_run:
+        print(f"  would run {jobs} copies of:")
+        print("    " + " ".join(str(part) for part in commands[0]))
+        return True
+
+    start = time.time()
+    processes = [subprocess.Popen(command, cwd=str(BASE)) for command in commands]
+    codes = [process.wait() for process in processes]
+    makespan = time.time() - start
+
+    failed = sum(1 for code in codes if code != 0)
+    log(
+        f"[{tag}] {label}: makespan {makespan / 60:.1f} min, "
+        f"{jobs / (makespan / 3600):.1f} jobs per hour, "
+        f"{failed} of {jobs} failed"
+    )
+    return failed == 0
+
+
 def stage_contention(dry_run: bool = False):
     """
     Fills the machine with jobs and measures what each packing delivers.
@@ -1506,10 +1592,6 @@ def stage_contention(dry_run: bool = False):
     threads do not share them in the same way. This runs each packing for
     real, on the same configuration, and reports jobs per hour.
 
-    Every job gets its own input data folder, since setup rewrites it on each
-    call, and no job collects: the dataset is written once at the end, as
-    concurrent writers would race on it.
-
     :param bool dry_run: if True, the commands are only printed
     :return: True if every pack that was attempted succeeded
     """
@@ -1520,56 +1602,49 @@ def stage_contention(dry_run: bool = False):
     )
 
     ok = True
-
     for threads, jobs in packs:
-        label = f"pack{threads}x{jobs}"
-        log(
-            f"[CONTENTION] {label}: {jobs} concurrent jobs of {threads} "
-            f"threads, td{CONTENTION_TYPICALDAYS}"
+        ok &= _run_pack(
+            threads, jobs, f"pack{threads}x{jobs}", "CONTENTION", dry_run
         )
 
-        commands = []
-        for job in range(1, jobs + 1):
-            command = [
-                sys.executable,
-                "run_benchmark.py",
-                "run",
-                "--case",
-                NL_CASE,
-                "--typicaldays",
-                str(CONTENTION_TYPICALDAYS),
-                "--time-limit",
-                str(_nl_time_limit(CONTENTION_TYPICALDAYS)),
-                "--threads",
-                str(threads),
-                "--case-name",
-                f"{NL_CASE}_{label}_job{job:02d}",
-                "--input-suffix",
-                f"job{job:02d}",
-                "--no-collect",
-            ]
-            for knob, value in NL_KNOBS.items():
-                command += ["--set", f"{knob}={value}"]
-            commands.append(command)
+    if not dry_run:
+        run([sys.executable, "run_benchmark.py", "collect"], dry_run)
 
-        if dry_run:
-            print(f"  would run {jobs} copies of:")
-            print("    " + " ".join(str(part) for part in commands[0]))
-            continue
+    return ok
 
-        start = time.time()
-        processes = [
-            subprocess.Popen(command, cwd=str(BASE)) for command in commands
-        ]
-        codes = [process.wait() for process in processes]
-        makespan = time.time() - start
 
-        failed = sum(1 for code in codes if code != 0)
-        ok &= failed == 0
-        log(
-            f"[CONTENTION] {label}: makespan {makespan / 60:.1f} min, "
-            f"{jobs / (makespan / 3600):.1f} jobs per hour, "
-            f"{failed} of {jobs} failed"
+def stage_worker_count(dry_run: bool = False):
+    """
+    How full to fill the machine, at one thread per job.
+
+    Stage 14 asks how to shape the jobs at a budget that is always spent in
+    full. This asks whether spending it in full is right: twelve, twenty four,
+    thirty six, forty eight and sixty four jobs on a forty eight core machine.
+
+    Throughput against the worker count is a curve with a maximum, and where
+    that maximum sits is the number a campaign runner should use. If it sits
+    below the core count, leaving cores idle is the faster choice, and that is
+    a real possibility here: the jobs do not oversubscribe the cores, they
+    share one memory system, and the first pack of stage 14 lost a factor two
+    to it.
+
+    :param bool dry_run: if True, the commands are only printed
+    :return: True if every pack that was attempted succeeded
+    """
+    log(
+        f"=== Stage 15: {NL_CASE} worker count at "
+        f"{CONTENTION_WORKER_THREADS} thread, "
+        f"{len(CONTENTION_WORKER_LEVELS)} levels ==="
+    )
+
+    ok = True
+    for jobs in CONTENTION_WORKER_LEVELS:
+        ok &= _run_pack(
+            CONTENTION_WORKER_THREADS,
+            jobs,
+            f"fill{jobs}",
+            "WORKERS",
+            dry_run,
         )
 
     if not dry_run:
@@ -1638,6 +1713,7 @@ STAGES = {
     12: stage_nl_cuts,
     13: stage_nl_threads,
     14: stage_contention,
+    15: stage_worker_count,
 }
 
 # The thread ladder answers a question about the machine rather than about the
