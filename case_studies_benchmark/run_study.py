@@ -1540,16 +1540,12 @@ def _prepare_input_folders(jobs: int):
 
     The jobs used to build their own copy, which meant as many concurrent
     copytree calls of nineteen megabytes from one source on a network share
-    as there were jobs. That corrupts files: stage 14 lost a whole pack of
-    eight and stage 15 a whole pack of twelve to
+    as there were jobs. The copies are made here instead, one after another,
+    from a folder the case study has just built, and any copy left over from
+    an earlier pack is replaced rather than trusted.
 
-        zipfile.BadZipFile: Bad CRC-32 for file 'xl/worksheets/sheet1.xml'
-
-    and it does not heal, because a case study only copies its source data
-    when the folder has no Topology.json in it. So the copies are made here
-    instead, one after another, from a folder the case study has just built,
-    and any copy left over from an earlier pack is replaced rather than
-    trusted.
+    This is not what corrupted the packs, which was the shared Summary.xlsx,
+    but concurrent copying of the same tree is worth not doing anyway.
 
     :param int jobs: how many copies are needed
     """
@@ -1618,6 +1614,8 @@ def _run_pack(threads: int, jobs: int, label: str, tag: str, dry_run: bool):
             f"{NL_CASE}_{label}_job{job:02d}",
             "--input-suffix",
             f"job{job:02d}",
+            "--results-subdir",
+            f"{label}/job{job:02d}",
             "--no-collect",
         ]
         for knob, value in NL_KNOBS.items():

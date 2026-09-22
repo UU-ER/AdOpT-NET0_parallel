@@ -70,6 +70,17 @@ def run_case(case: str, **settings):
     input_data_path = INPUT_DATA_PATH / (f"{case}_{suffix}" if suffix else case)
     case_name = settings.pop("case_name", None) or _build_case_name(case, settings)
 
+    # Every run appends a row to Summary.xlsx by reading the whole file and
+    # writing it back, so concurrent runs sharing one results folder race on
+    # it and corrupt it. A corrupt summary then kills every later run, since
+    # reading it is the first thing write_results does: a pack of eight and a
+    # pack of twelve were lost to it before the cause was found. A subfolder
+    # gives a run its own summary, and collect globs for the profiles at any
+    # depth so the dataset is unaffected
+    subdir = settings.pop("results_subdir", None)
+    results_path = RESULTS_PATH / subdir if subdir else RESULTS_PATH
+    results_path.mkdir(parents=True, exist_ok=True)
+
     # Pinning is a property of the process and not of the model, so it is
     # applied here and never passed on to the case study. It has to happen
     # before the solver starts, as the solver threads inherit the mask
@@ -79,7 +90,7 @@ def run_case(case: str, **settings):
     print(log_msg)
     log.info(log_msg)
 
-    case_study.setup(input_data_path, RESULTS_PATH, case_name=case_name, **settings)
+    case_study.setup(input_data_path, results_path, case_name=case_name, **settings)
 
     model = adopt.ModelHub()
     model.read_data(input_data_path)
@@ -573,7 +584,7 @@ def main():
     if "carbon_price" in knobs_of(args.case):
         settings["carbon_price"] = args.carbon_price
 
-    for name in ["case_name", "input_suffix"]:
+    for name in ["case_name", "input_suffix", "results_subdir"]:
         if getattr(args, name, None):
             settings[name] = getattr(args, name)
     settings.update(parse_overrides(args.case, args.overrides))
@@ -662,6 +673,14 @@ def _add_case_arguments(parser, sweep: bool = False):
             default=None,
             help="write the input data to inputData/<case>_<suffix> rather "
             "than to inputData/<case>. Concurrent runs need their own copy",
+        )
+        parser.add_argument(
+            "--results-subdir",
+            dest="results_subdir",
+            default=None,
+            help="write the results to results/<subdir> rather than to "
+            "results/. Concurrent runs need it, as they would otherwise race "
+            "on the shared Summary.xlsx and corrupt it",
         )
         parser.add_argument(
             "--no-collect",
