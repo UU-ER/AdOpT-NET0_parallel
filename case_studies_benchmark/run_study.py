@@ -395,15 +395,17 @@ CONTENTION_TYPICALDAYS = 4
 # model slowing by x44 and x9 in a full pack, and those wait rather than
 # compute, so they interleave.
 #
-# Two threads is the arm stage 14 chose, 24 jobs of two delivering 72.1 runs
-# an hour against 46.0 for 48 jobs of one, so it carries the fine grid: the
-# maximum is expected between three quarters and full, and the packs there
-# are the cheap ones, about a quarter of an hour each. One thread keeps the
-# coarse grid, enough to say whether it loses at every fill or only at a full
-# machine, and its packs cost three to four times as much
+# Both arms get a fine grid, but not at the same place, because the two
+# curves are not expected to peak at the same fill. At two threads stage 14
+# measured 72.1 runs an hour on a full machine, so the maximum is at or near
+# full and the grid is refined between three quarters and full. At one thread
+# the same machine gave 46.0, the worst of the five packings, so that curve is
+# already falling at full and its maximum should sit lower: the grid is
+# refined between half and three quarters instead. Putting the extra points
+# above three quarters there would only measure the descent in detail
 CONTENTION_FILL_LEVELS = {
     2: [0.5, 0.75, 0.83, 0.92, 1.0, 1.08, 1.33],
-    1: [0.5, 0.75, 1.0, 1.33],
+    1: [0.5, 0.625, 0.75, 0.875, 1.0, 1.33],
 }
 
 # Threads a job asks for, cheapest arm first. Two comes first because stage
