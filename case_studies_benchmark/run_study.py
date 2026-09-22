@@ -54,10 +54,11 @@ Stages:
               threads, run concurrently. Every other stage measures runs that
               had the machine to themselves, so the throughput argument for
               thin jobs is arithmetic. This measures it
-15. workers   how full to fill the machine: 12, 24, 36, 48 and 64 jobs of one
-              thread on 48 cores. Stage 14 always spends the whole budget,
-              this asks whether it should, since the jobs share one memory
-              system rather than oversubscribing the cores
+15. workers   how full to fill the machine, at one and at two threads a job:
+              half the cores, three quarters, all of them and a third more
+              than all of them. Stage 14 always spends the whole budget, this
+              asks whether it should, since the jobs share one memory system
+              rather than oversubscribing the cores
 
 Examples::
 
@@ -383,20 +384,23 @@ CONTENTION_TYPICALDAYS = 4
 
 # Stage 15, how full to fill the machine. Stage 14 asks how to shape the jobs
 # at a budget that is always spent in full; this asks whether spending it in
-# full is right at all. A job at one thread uses one core, so 48 of them do
-# not oversubscribe the cores, but they do share one memory system, and the
-# first pack of stage 14 suggests that is what costs: a run that takes 7.6
-# minutes alone took about 16 in a pack of 48.
+# full is right at all.
 #
-# 64 is in on purpose. A run is not solver all the way through: reading the
-# data and building the model are single threaded and partly waiting, so more
-# jobs than cores can still pay if the serial phases interleave. The level
-# that wins is the one to put in the campaign runner
-CONTENTION_WORKER_LEVELS = [12, 24, 36, 48, 64]
+# The levels are fractions of the core budget rather than worker counts, so
+# that the two thread counts are compared at the same amount of machine:
+# 0.5 leaves half the cores idle, 1.0 fills them exactly and 1.33
+# oversubscribes by a third. Oversubscription is in on purpose, because a run
+# is not solver all the way through: stage 14 measured the data reading and
+# the model construction slowing by x22 and x10 in a full pack, and those are
+# phases that wait rather than compute, so they interleave
+CONTENTION_FILL_LEVELS = [0.5, 0.75, 1.0, 1.33]
 
-# Threads per job while the worker count is swept. One, because that is the
-# packing the throughput argument is about
-CONTENTION_WORKER_THREADS = 1
+# Threads a job asks for, cheapest arm first. Two comes first because stage
+# 14 chose it: 24 jobs of two threads delivered 72.1 runs an hour against
+# 46.0 for 48 jobs of one, although the arithmetic over solo runs had one
+# thread ahead by x1.8. One is still swept, to find out whether it loses at
+# every fill or only at a full machine
+CONTENTION_WORKER_THREADS = [2, 1]
 
 # The arm stage 13 runs. The gurobi defaults until stage 12 says otherwise:
 # set it to {"cuts": 0} if that stage finds cuts off is the faster arm here
@@ -1538,6 +1542,13 @@ def _run_pack(threads: int, jobs: int, label: str, tag: str, dry_run: bool):
         f"thread{'s' if threads > 1 else ''}, td{CONTENTION_TYPICALDAYS}"
     )
 
+    # Each job writes its own console to a file. Without this every job of a
+    # pack writes to the same terminal, which is unreadable while they run and
+    # gone afterwards: five jobs of stage 14 failed leaving an empty result
+    # folder and no way to find out why
+    log_path = BASE / "pack_logs"
+    log_path.mkdir(exist_ok=True)
+
     commands = []
     for job in range(1, jobs + 1):
         command = [
@@ -1568,17 +1579,29 @@ def _run_pack(threads: int, jobs: int, label: str, tag: str, dry_run: bool):
         return True
 
     start = time.time()
-    processes = [subprocess.Popen(command, cwd=str(BASE)) for command in commands]
+    processes, handles = [], []
+    for job, command in enumerate(commands, start=1):
+        handle = open(log_path / f"{label}_job{job:02d}.log", "w")
+        handles.append(handle)
+        processes.append(
+            subprocess.Popen(
+                command, cwd=str(BASE), stdout=handle, stderr=subprocess.STDOUT
+            )
+        )
+
     codes = [process.wait() for process in processes]
+    for handle in handles:
+        handle.close()
     makespan = time.time() - start
 
-    failed = sum(1 for code in codes if code != 0)
+    failed = [job for job, code in enumerate(codes, start=1) if code != 0]
     log(
         f"[{tag}] {label}: makespan {makespan / 60:.1f} min, "
         f"{jobs / (makespan / 3600):.1f} jobs per hour, "
-        f"{failed} of {jobs} failed"
+        f"{len(failed)} of {jobs} failed"
+        + (f", jobs {failed}, see pack_logs/" if failed else "")
     )
-    return failed == 0
+    return not failed
 
 
 def stage_contention(dry_run: bool = False):
@@ -1618,8 +1641,9 @@ def stage_worker_count(dry_run: bool = False):
     How full to fill the machine, at one thread per job.
 
     Stage 14 asks how to shape the jobs at a budget that is always spent in
-    full. This asks whether spending it in full is right: twelve, twenty four,
-    thirty six, forty eight and sixty four jobs on a forty eight core machine.
+    full. This asks whether spending it in full is right, at both thread
+    counts that are still candidates: half the machine, three quarters, all of
+    it, and a third more than all of it.
 
     Throughput against the worker count is a curve with a maximum, and where
     that maximum sits is the number a campaign runner should use. If it sits
@@ -1631,20 +1655,21 @@ def stage_worker_count(dry_run: bool = False):
     :param bool dry_run: if True, the commands are only printed
     :return: True if every pack that was attempted succeeded
     """
+    packs = [
+        (threads, max(1, round(CONTENTION_CORE_BUDGET * fill / threads)))
+        for threads in CONTENTION_WORKER_THREADS
+        for fill in CONTENTION_FILL_LEVELS
+    ]
+
     log(
-        f"=== Stage 15: {NL_CASE} worker count at "
-        f"{CONTENTION_WORKER_THREADS} thread, "
-        f"{len(CONTENTION_WORKER_LEVELS)} levels ==="
+        f"=== Stage 15: {NL_CASE} worker count on "
+        f"{CONTENTION_CORE_BUDGET} cores, {len(packs)} packs ==="
     )
 
     ok = True
-    for jobs in CONTENTION_WORKER_LEVELS:
+    for threads, jobs in packs:
         ok &= _run_pack(
-            CONTENTION_WORKER_THREADS,
-            jobs,
-            f"fill{jobs}",
-            "WORKERS",
-            dry_run,
+            threads, jobs, f"fill{jobs}x{threads}", "WORKERS", dry_run
         )
 
     if not dry_run:
