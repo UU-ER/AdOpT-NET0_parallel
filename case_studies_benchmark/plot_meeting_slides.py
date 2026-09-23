@@ -15,6 +15,18 @@ fewer elements, larger type, one message each.
                     four times the simplex iterations
 4. ``cuts``         the option that looked like a factor two win and is not
                     one once the model has a branch and bound tree
+5. ``measured``     what a full machine delivers, against the arithmetic
+6. ``phases``       where a job of a full pack loses its time
+7. ``fill``         throughput against how many jobs run at once, at one
+                    and at two threads, with repeated packs drawn hollow
+8. ``phases``       the wall time of a job split into its phases, against
+                    how many jobs run at once
+9. ``slowdown``     reading against the solver: how much slower each runs,
+                    and whether the solver gets the cores it asked for
+10. ``timeline``    how many jobs of a pack are in each phase over time
+
+Figures 7 to 10 read the phase timestamps of each job from ``--results``, and
+``--figures`` draws a subset, so a folder of earlier figures is not redrawn.
 
 Run it from the benchmark folder::
 
@@ -65,6 +77,10 @@ MEMORY_PER_CORE_BUDGET = 2.0
 # it rather than for the core budget the first figure takes
 CONTENTION_TYPICALDAYS = 4
 CONTENTION_CORES = 48
+
+# The packs the timeline figure draws: one thread at the peak and at a full
+# machine, and two threads at a full machine
+TIMELINE_PACKS = ["fill24x1", "fill48x1", "fill24x2"]
 
 
 def load(dataset: Path):
@@ -480,8 +496,9 @@ def figure_contention_phases(data: pd.DataFrame, output: Path):
     Phase by phase, the median of the pack against the same run alone. The
     solver itself loses a factor five and a half, which is memory bandwidth,
     since a job at one thread does not compete for a core. Reading the input
-    loses far more, and that part is ours: every job reads its own copy from
-    a network share.
+    loses far more, and that part is ours: it includes clustering the year
+    into typical days, which alone already keeps about twelve cores busy, see
+    figure_reading.
 
     :param DataFrame data: every run of the case study, packs included
     :param Path output: file to write, without a suffix
@@ -530,6 +547,406 @@ def figure_contention_phases(data: pd.DataFrame, output: Path):
     return finalize(figure, output)
 
 
+# The two thread counts stage 15 swept, with the colour and marker every
+# stage 15 figure gives them
+FILL_ARMS = [
+    (1, "1 thread a job", PALETTE["blue_main"], "o"),
+    (2, "2 threads a job", PALETTE["red_strong"], "s"),
+]
+
+# Phases of a run as the stage 15 figures group them. Checks, the model, the
+# balances and the solver setup are all a few seconds alone and are one bar
+PHASE_GROUPS = [
+    ("reading the input", ["t_read_data_s"], PALETTE["red_light"]),
+    (
+        "building the model",
+        [
+            "t_preprocessing_checks_s",
+            "t_construct_model_s",
+            "t_construct_balances_s",
+            "t_solver_setup_s",
+        ],
+        PALETTE["neutral"],
+    ),
+    ("solving", ["t_solve_s"], PALETTE["blue_secondary"]),
+    ("writing results", ["t_write_results_s"], PALETTE["green_strong"]),
+]
+
+
+def read_fills(log: Path):
+    """
+    Reads what each pack of the worker count stages delivered.
+
+    Stage 15 names a pack fill<jobs>x<threads> and stage 16, which repeats
+    some of them, rep<jobs>x<threads>. Stage 14 names its packs the other way
+    round, pack<threads>x<jobs>, and those are read too, since they are the
+    same measurement at a full machine. A pack that was attempted more than
+    once counts at its last attempt, because the early attempts of stage 15
+    all failed on the shared summary file and were run again.
+
+    :param Path log: study.log
+    :return: list of dicts with the threads, the jobs, the measured
+        throughput and whether the pack is a repeat
+    """
+    if not log.is_file():
+        return []
+
+    pattern = re.compile(
+        r"\[(?:CONTENTION|WORKERS|REPEAT)\] (pack|fill|rep)(\d+)x(\d+): "
+        r"makespan [\d.]+ min, ([\d.]+) jobs per hour, (\d+) of (\d+) failed"
+    )
+
+    last = {}
+    for line in log.read_text(errors="ignore").splitlines():
+        found = pattern.search(line)
+        if not found:
+            continue
+        kind, first, second, rate, failed, total = found.groups()
+        jobs, threads = (second, first) if kind == "pack" else (first, second)
+        last[(kind, int(jobs), int(threads))] = {
+            "threads": int(threads),
+            "jobs": int(jobs),
+            "measured": float(rate),
+            "repeat": kind != "fill",
+            "failed": int(failed),
+            "total": int(total),
+        }
+
+    # A pack that lost every job has no makespan worth the name
+    return [pack for pack in last.values() if pack["failed"] < pack["total"]]
+
+
+def pack_runs(data: pd.DataFrame):
+    """
+    The runs of the fill and contention packs, with their packing as columns.
+
+    :param DataFrame data: every run of the case study
+    :return: DataFrame of the pack runs with jobs, pack_threads and label
+        columns
+    """
+    names = data["case_name"].str.extract(r"_(fill|pack|rep)(\d+)x(\d+)_job")
+    packs = data[names[0].notna()].copy()
+    names = names[names[0].notna()]
+    first, second = names[1].astype(int), names[2].astype(int)
+    stage14 = names[0] == "pack"
+    packs["jobs"] = second.where(stage14, first)
+    packs["pack_threads"] = first.where(stage14, second)
+    packs["label"] = names[0] + names[1] + "x" + names[2]
+    return packs
+
+
+def figure_fill(fills: list, output: Path):
+    """
+    Throughput against how many jobs run at once, at one and at two threads.
+
+    The x axis is the number of jobs rather than the number of cores they ask
+    for, because that is the axis the two curves line up on. A repeat of a
+    pack is drawn hollow next to its first sample, so the spread between two
+    runs of the same pack is on the slide next to the differences it has to
+    be compared with.
+
+    :param list fills: packs as read by read_fills
+    :param Path output: file to write, without a suffix
+    """
+    if not any(not pack["repeat"] for pack in fills):
+        return []
+
+    figure, axis = plt.subplots(figsize=(12.5, 6.4))
+    for threads, label, colour, marker in FILL_ARMS:
+        first = sorted(
+            (p for p in fills if p["threads"] == threads and not p["repeat"]),
+            key=lambda p: p["jobs"],
+        )
+        again = [p for p in fills if p["threads"] == threads and p["repeat"]]
+        axis.plot(
+            [p["jobs"] for p in first],
+            [p["measured"] for p in first],
+            color=colour,
+            marker=marker,
+            markersize=11,
+            linewidth=2.6,
+            label=label,
+            zorder=3,
+        )
+        axis.scatter(
+            [p["jobs"] for p in again],
+            [p["measured"] for p in again],
+            s=170,
+            marker=marker,
+            facecolors="white",
+            edgecolors=colour,
+            linewidths=2.4,
+            label=f"{label}, same pack on another night",
+            zorder=4,
+        )
+
+    axis.axvline(
+        CONTENTION_CORES,
+        color=PALETTE["grey_text"],
+        linestyle="--",
+        linewidth=1.6,
+        zorder=2,
+    )
+    axis.annotate(
+        f"{CONTENTION_CORES} cores",
+        (CONTENTION_CORES, 5),
+        xytext=(6, 0),
+        textcoords="offset points",
+        fontsize=14,
+        color=PALETTE["grey_text"],
+    )
+    axis.set_xlabel("jobs running at once")
+    axis.set_ylabel("runs completed per hour")
+    axis.set_ylim(0, max(p["measured"] for p in fills) * 1.15)
+    axis.set_title("Both thread counts peak at the same 70 to 78 runs an hour")
+    axis.legend(loc="lower left", fontsize=13)
+    faint_grid(axis)
+
+    return finalize(figure, output)
+
+
+def figure_phases(data: pd.DataFrame, output: Path):
+    """
+    Where the wall time of a job goes, phase by phase, as the machine fills.
+
+    Median of every pack, next to the same run alone, one panel per thread
+    count. The height of a bar is the wall time of a job, so the figure
+    answers directly whether the time a full machine costs is lost in the
+    solver or around it.
+
+    :param DataFrame data: every run of the case study, packs included
+    :param Path output: file to write, without a suffix
+    """
+    packs = pack_runs(data)
+    packs = packs[packs["label"].str.startswith("fill")]
+    if packs.empty:
+        return []
+
+    columns = [column for _, group, _ in PHASE_GROUPS for column in group]
+    figure, axes = plt.subplots(
+        1,
+        2,
+        figsize=(15.5, 6.6),
+        sharey=True,
+        gridspec_kw={"width_ratios": [8, 7]},
+    )
+    for axis, (threads, label, _, _) in zip(axes, FILL_ARMS):
+        solo = _cell(data, CONTENTION_TYPICALDAYS, threads)
+        medians = (
+            packs[packs["pack_threads"] == threads]
+            .groupby("jobs")[columns]
+            .median()
+        )
+        rows = [("alone", solo[columns])] + [
+            (str(jobs), medians.loc[jobs]) for jobs in medians.index
+        ]
+
+        bottom = [0.0] * len(rows)
+        for name, group, colour in PHASE_GROUPS:
+            heights = [row[group].sum() / 60 for _, row in rows]
+            axis.bar(
+                range(len(rows)),
+                heights,
+                bottom=bottom,
+                width=0.7,
+                color=colour,
+                edgecolor="black",
+                linewidth=0.8,
+                label=name,
+                zorder=3,
+            )
+            bottom = [b + h for b, h in zip(bottom, heights)]
+
+        axis.set_xticks(range(len(rows)))
+        axis.set_xticklabels([name for name, _ in rows])
+        axis.set_xlabel("jobs running at once")
+        axis.set_title(label)
+        faint_grid(axis)
+
+    axes[0].set_ylabel("wall time of one job, min (median)")
+    axes[0].legend(loc="upper left", fontsize=13)
+    figure.suptitle("Past 30 jobs the extra time is mostly reading the input")
+
+    return finalize(figure, output)
+
+
+def figure_slowdown(data: pd.DataFrame, output: Path):
+    """
+    How much slower each part of a job runs as the machine fills.
+
+    Left: reading the input and the solver, each against the same run alone.
+    The solver is measured per unit of gurobi work, which is deterministic and
+    identical in every job of a pack, so the ratio is the slowdown of the
+    solver alone, net of any change in the search.
+    Right: the cores the solver keeps busy, against the same run alone. Not
+    against the threads asked, because two threads alone keep only 1.3 cores
+    busy. Below one, the solver is waiting for cores it had alone, which
+    means something else on the machine is using more cores than the pack
+    reserved.
+
+    :param DataFrame data: every run of the case study, packs included
+    :param Path output: file to write, without a suffix
+    """
+    packs = pack_runs(data)
+    packs = packs[packs["label"].str.startswith("fill")].copy()
+    if packs.empty:
+        return []
+    packs["solver_speed"] = packs["gurobi_runtime_s"] / packs["gurobi_work"]
+
+    figure, (left, right) = plt.subplots(1, 2, figsize=(15.5, 6.4))
+    for threads, label, colour, marker in FILL_ARMS:
+        solo = _cell(data, CONTENTION_TYPICALDAYS, threads)
+        solo_speed = solo["gurobi_runtime_s"] / solo["gurobi_work"]
+        arm = (
+            packs[packs["pack_threads"] == threads]
+            .groupby("jobs")
+            .median(numeric_only=True)
+        )
+        left.plot(
+            arm.index,
+            arm["t_read_data_s"] / solo["t_read_data_s"],
+            color=colour,
+            marker=marker,
+            markersize=10,
+            linewidth=2.6,
+            label=f"reading, {label}",
+            zorder=3,
+        )
+        left.plot(
+            arm.index,
+            arm["solver_speed"] / solo_speed,
+            color=colour,
+            marker=marker,
+            markersize=10,
+            linewidth=2.6,
+            linestyle="--",
+            markerfacecolor="white",
+            label=f"solver, {label}",
+            zorder=3,
+        )
+        right.plot(
+            arm.index,
+            arm["parallelism_solve"] / solo["parallelism_solve"],
+            color=colour,
+            marker=marker,
+            markersize=10,
+            linewidth=2.6,
+            label=label,
+            zorder=3,
+        )
+
+    left.axhline(1, color=PALETTE["grey_text"], linewidth=1.6)
+    left.set_yscale("log")
+    left.set_yticks([1, 2, 5, 10, 20, 50, 100])
+    left.set_yticklabels(["x1", "x2", "x5", "x10", "x20", "x50", "x100"])
+    left.set_xlabel("jobs running at once")
+    left.set_ylabel("slower than the same run alone")
+    left.set_title("Reading degrades far more than the solver")
+    left.legend(loc="upper left", fontsize=12)
+    faint_grid(left)
+
+    right.axhline(1, color=PALETTE["grey_text"], linewidth=1.6)
+    right.set_ylim(0, 1.3)
+    right.set_xlabel("jobs running at once")
+    right.set_ylabel("cores the solver keeps busy, vs alone")
+    right.set_title("The solver loses cores it had alone")
+    right.legend(loc="lower left", fontsize=13)
+    faint_grid(right)
+
+    return finalize(figure, output)
+
+
+def _phase_intervals(results: Path, label: str):
+    """
+    Start and end of every phase of every job of one pack, in wall clock time.
+
+    :param Path results: folder the pack results were archived under
+    :param str label: pack label, such as fill48x1
+    :return: DataFrame with job, phase, start and end in seconds from the
+        start of the first job
+    """
+    bounds = [
+        ("reading the input", "start:read_data", "end:read_data"),
+        ("building the model", "end:read_data", "start:solve"),
+        ("solving", "start:solve", "end:solve"),
+        ("writing results", "end:solve", "end:write_results"),
+    ]
+    rows = []
+    for series in results.glob(f"**/{label}/job*/*/profile_timeseries.csv"):
+        events = pd.read_csv(series, usecols=["timestamp", "event"]).dropna()
+        stamps = dict(zip(events["event"], events["timestamp"]))
+        job = series.parent.parent.name
+        for phase, start, end in bounds:
+            if start in stamps and end in stamps:
+                rows.append((job, phase, stamps[start], stamps[end]))
+
+    intervals = pd.DataFrame(rows, columns=["job", "phase", "start", "end"])
+    if not intervals.empty:
+        intervals[["start", "end"]] -= intervals["start"].min()
+    return intervals
+
+
+def figure_timeline(results: Path, labels: list, output: Path):
+    """
+    How many jobs of a pack are in each phase, half minute by half minute.
+
+    Shows whether the phases of different jobs overlap: if every job reads at
+    the same time, reading contends with reading and solving with solving; if
+    they are staggered, one job's reading takes cores from another job's
+    solver.
+
+    :param Path results: folder the pack results were archived under
+    :param list labels: pack labels to draw, one panel each
+    :param Path output: file to write, without a suffix
+    """
+    panels = [(label, _phase_intervals(results, label)) for label in labels]
+    panels = [(label, frame) for label, frame in panels if not frame.empty]
+    if not panels:
+        return []
+
+    figure, axes = plt.subplots(
+        len(panels), 1, figsize=(12.5, 3.4 * len(panels) + 0.8), sharex=True
+    )
+    axes = [axes] if len(panels) == 1 else list(axes)
+    names = [name for name, _, _ in PHASE_GROUPS]
+    colours = [colour for _, _, colour in PHASE_GROUPS]
+
+    for axis, (label, frame) in zip(axes, panels):
+        grid = list(range(0, int(frame["end"].max()) + 30, 30))
+        counts = [
+            [
+                (
+                    (frame["phase"] == name)
+                    & (frame["start"] <= t)
+                    & (frame["end"] > t)
+                ).sum()
+                for t in grid
+            ]
+            for name in names
+        ]
+        axis.stackplot(
+            [t / 60 for t in grid],
+            counts,
+            labels=names,
+            colors=colours,
+            edgecolor="black",
+            linewidth=0.4,
+        )
+        jobs, threads = re.match(r"\D+(\d+)x(\d+)", label).groups()
+        axis.set_ylim(0, int(jobs) * 1.05)
+        axis.set_ylabel("jobs")
+        axis.set_title(
+            f"{jobs} jobs of {threads} thread{'s' if threads != '1' else ''}",
+            fontsize=16,
+        )
+        faint_grid(axis)
+
+    axes[-1].set_xlabel("minutes from the start of the pack")
+    axes[0].legend(loc="upper right", fontsize=12, ncol=2)
+
+    return finalize(figure, output)
+
+
 def main():
     """
     Command line interface
@@ -549,6 +966,18 @@ def main():
         default=BASE / "study.log",
         help="study log, which is where the makespan of a pack lives",
     )
+    parser.add_argument(
+        "--results",
+        type=Path,
+        default=BASE / "results",
+        help="results folder, searched for the phase timestamps of a pack",
+    )
+    parser.add_argument(
+        "--figures",
+        type=int,
+        nargs="+",
+        help="numbers of the figures to draw, all of them if left out",
+    )
     args = parser.parse_args()
 
     data = load(args.dataset)
@@ -558,22 +987,36 @@ def main():
     # Larger than the paper preset: a slide is read from the back of a room
     apply_publication_style(font_size=19)
 
-    written = []
-    written += figure_throughput(data, args.output / "01_throughput", args.cores)
-    written += figure_memory(data, args.output / "02_memory_per_core")
-    written += figure_mechanism(data, args.output / "03_why_two_threads")
-    written += figure_cuts(data, args.output / "04_cuts_off")
-
+    # Each figure with the inputs it needs, so that a subset can be drawn
     packs = read_packs(args.log)
-    if packs:
-        written += figure_measured_throughput(
+    fills = read_fills(args.log)
+    figures = {
+        1: lambda: figure_throughput(
+            data, args.output / "01_throughput", args.cores
+        ),
+        2: lambda: figure_memory(data, args.output / "02_memory_per_core"),
+        3: lambda: figure_mechanism(data, args.output / "03_why_two_threads"),
+        4: lambda: figure_cuts(data, args.output / "04_cuts_off"),
+        5: lambda: figure_measured_throughput(
             data, packs, args.output / "05_measured_throughput"
-        )
-        written += figure_contention_phases(
+        ),
+        6: lambda: figure_contention_phases(
             data, args.output / "06_where_the_time_goes"
-        )
-    else:
-        print(f"No contention packs in {args.log}, figures 5 and 6 skipped")
+        ),
+        7: lambda: figure_fill(fills, args.output / "07_throughput_against_jobs"),
+        8: lambda: figure_phases(data, args.output / "08_phases_against_jobs"),
+        9: lambda: figure_slowdown(data, args.output / "09_reading_or_solver"),
+        10: lambda: figure_timeline(
+            args.results, TIMELINE_PACKS, args.output / "10_timeline"
+        ),
+    }
+
+    written = []
+    for number in args.figures or sorted(figures):
+        drawn = figures[number]()
+        if not drawn:
+            print(f"Figure {number} skipped, its runs are not in the inputs")
+        written += drawn
 
     print(f"Wrote {len(written)} files to {args.output}")
     for path in written:

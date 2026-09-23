@@ -59,6 +59,9 @@ Stages:
               than all of them. Stage 14 always spends the whole budget, this
               asks whether it should, since the jobs share one memory system
               rather than oversubscribing the cores
+16. repeat    the one thread packs of stage 15 where the curve falls, run a
+              second time. Two packs that stage 14 and 15 both ran differ by
+              up to a quarter, so a single pack cannot place a cliff
 
 Examples::
 
@@ -74,6 +77,7 @@ Examples::
     python run_study.py --manifest 13       # its manifest, after the fact
     python run_study.py --stages 14         # what a full machine delivers
     python run_study.py --stages 15         # how full to fill it
+    python run_study.py --stages 16         # the falling part of it, again
 """
 
 import argparse
@@ -414,6 +418,13 @@ CONTENTION_FILL_LEVELS = {
 # thread ahead by x1.8. One is still swept, to find out whether it loses at
 # every fill or only at a full machine
 CONTENTION_WORKER_THREADS = [2, 1]
+
+# Stage 16, the one thread packs of stage 15 run a second time. Stage 15 put a
+# drop from 72.3 to 41.5 runs an hour between 30 and 36 jobs, and a recovery
+# to 57.3 at 45, but the same pack run twice has differed by up to a quarter:
+# 24x2 gave 72.1 in stage 14 and 56.4 in stage 15, 48x1 gave 46.0 and 53.3.
+# One more sample of each tells whether the drop is a cliff or noise
+REPEAT_ONE_THREAD_JOBS = [30, 36, 42, 45]
 
 # The arm stage 13 runs. The gurobi defaults until stage 12 says otherwise:
 # set it to {"cuts": 0} if that stage finds cuts off is the faster arm here
@@ -1729,6 +1740,32 @@ def stage_worker_count(dry_run: bool = False):
     return ok
 
 
+def stage_repeat_fill(dry_run: bool = False):
+    """
+    Runs the one thread packs of stage 15 where its curve falls a second time.
+
+    The packs are labelled rep rather than fill, so that they write into
+    results folders and pack logs of their own and enter the dataset as runs of
+    their own, instead of overwriting the first sample.
+
+    :param bool dry_run: if True, the commands are only printed
+    :return: True if every pack that was attempted succeeded
+    """
+    log(
+        f"=== Stage 16: {NL_CASE} one thread packs repeated on "
+        f"{CONTENTION_CORE_BUDGET} cores, {len(REPEAT_ONE_THREAD_JOBS)} packs ==="
+    )
+
+    ok = True
+    for jobs in REPEAT_ONE_THREAD_JOBS:
+        ok &= _run_pack(1, jobs, f"rep{jobs}x1", "REPEAT", dry_run)
+
+    if not dry_run:
+        run([sys.executable, "run_benchmark.py", "collect"], dry_run)
+
+    return ok
+
+
 def stage_nl_cuts(dry_run: bool = False):
     """
     Asks whether cuts = 0 is still the faster arm on the nine node case study.
@@ -1790,6 +1827,7 @@ STAGES = {
     13: stage_nl_threads,
     14: stage_contention,
     15: stage_worker_count,
+    16: stage_repeat_fill,
 }
 
 # The thread ladder answers a question about the machine rather than about the
