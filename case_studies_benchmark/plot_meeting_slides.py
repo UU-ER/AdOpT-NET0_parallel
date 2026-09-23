@@ -24,6 +24,9 @@ fewer elements, larger type, one message each.
 9. ``slowdown``     reading against the solver: how much slower each runs,
                     and whether the solver gets the cores it asked for
 10. ``timeline``    how many jobs of a pack are in each phase over time
+15. ``to fill``     the memory to reserve to keep a whole machine busy, at
+                    each packing, with the memory of one job on every bar.
+                    11 to 14 are plot_meeting_options.py
 
 Figures 7 to 10 read the phase timestamps of each job from ``--results``, and
 ``--figures`` draws a subset, so a folder of earlier figures is not redrawn.
@@ -177,7 +180,8 @@ def figure_throughput(data: pd.DataFrame, output: Path, cores: int):
 
     axes[0].set_ylabel("runs completed per hour")
     figure.suptitle(
-        f"The best way to spend {cores} cores flips with the size of the model",
+        f"Predicted from runs alone: the best way to spend {cores} cores "
+        "flips with the size of the model",
         fontsize=21,
     )
     return finalize(figure, output)
@@ -185,11 +189,11 @@ def figure_throughput(data: pd.DataFrame, output: Path, cores: int):
 
 def figure_memory(data: pd.DataFrame, output: Path):
     """
-    Memory per core against the thread count, against the cluster budget.
+    Memory per core against the thread count.
 
     Memory per job is flat up to four threads, so memory per *core* falls as
     the threads rise. On the large model a single thread per run asks for two
-    gigabytes a core, which is the whole of a thin partition's budget.
+    gigabytes a core. figure_memory_to_fill says what that means in practice.
 
     :param DataFrame data: every run of the case study
     :param Path output: file to write, without a suffix
@@ -217,29 +221,86 @@ def figure_memory(data: pd.DataFrame, output: Path):
         )
         annotate_bars(axis, bars, fmt="{:.2f}", fontsize=15)
 
-    axis.axhline(
-        MEMORY_PER_CORE_BUDGET,
-        color=PALETTE["red_strong"],
-        linewidth=2.6,
-        linestyle="--",
-        zorder=4,
-    )
-    # On the left, where the small model's bars leave the space free: the
-    # tall bar this line is about is the right hand one
-    axis.annotate(
-        "what a thin cluster partition gives: 2 GB per core",
-        (-0.42, MEMORY_PER_CORE_BUDGET + 0.07),
-        ha="left",
-        fontsize=15,
-        color=PALETTE["red_strong"],
-    )
-
     axis.set_xticks(range(len(MODELS)))
     axis.set_xticklabels([label for _, label, _ in MODELS])
     axis.set_ylabel("memory needed per core, GB")
     axis.set_ylim(0, MEMORY_PER_CORE_BUDGET * 1.35)
-    axis.set_title("On the large model, one thread per run barely fits")
+    axis.set_title("Memory per core halves from one thread to two")
     axis.legend(ncol=3, loc="upper right")
+    faint_grid(axis)
+
+    return finalize(figure, output)
+
+
+def figure_memory_to_fill(data: pd.DataFrame, output: Path):
+    """
+    The memory a campaign has to reserve to keep a whole machine busy.
+
+    Memory per core is abstract; what a person running a campaign decides is
+    how many jobs to start and how much memory to ask for. Filling a machine
+    of CONTENTION_CORES cores with jobs of k threads means cores / k jobs at
+    once, each needing its own peak memory, so the reservation is their sum.
+    Each bar is labelled with the memory of one job, which is the number to
+    put in a job script.
+
+    :param DataFrame data: every run of the case study
+    :param Path output: file to write, without a suffix
+    """
+    figure, axis = plt.subplots(figsize=(12.5, 6.6))
+
+    width = 0.26
+    shades = [PALETTE["blue_main"], PALETTE["teal"], PALETTE["neutral"]]
+    tallest = 0.0
+
+    for offset, threads in enumerate(PACKINGS):
+        jobs = CONTENTION_CORES // threads
+        heights, per_job = [], []
+        for typicaldays, _, _ in MODELS:
+            run = _cell(data, typicaldays, threads)
+            memory = 0 if run is None else run["memory_gb"]
+            per_job.append(memory)
+            heights.append(jobs * memory)
+        tallest = max(tallest, *heights)
+
+        positions = [p + (offset - 1) * width for p in range(len(MODELS))]
+        axis.bar(
+            positions,
+            heights,
+            width=width,
+            label=f"{jobs} jobs x {threads} thread{'s' if threads > 1 else ''}",
+            color=shades[offset],
+            edgecolor="black",
+            linewidth=1.0,
+            zorder=3,
+        )
+        for x, total, single in zip(positions, heights, per_job):
+            axis.annotate(
+                f"{total:.0f} GB",
+                (x, total),
+                xytext=(0, 6),
+                textcoords="offset points",
+                ha="center",
+                fontsize=16,
+                fontweight="bold",
+            )
+            axis.annotate(
+                f"{single:.1f} GB\nper job",
+                (x, total / 2),
+                ha="center",
+                va="center",
+                fontsize=12,
+                color="white" if offset < 2 else "black",
+            )
+
+    axis.set_xticks(range(len(MODELS)))
+    axis.set_xticklabels([label for _, label, _ in MODELS])
+    axis.set_ylabel(f"memory to fill {CONTENTION_CORES} cores, GB")
+    axis.set_ylim(0, tallest * 1.2)
+    axis.set_title(
+        f"To keep {CONTENTION_CORES} cores busy: two threads a job "
+        "halves the memory to reserve"
+    )
+    axis.legend(loc="upper left")
     faint_grid(axis)
 
     return finalize(figure, output)
@@ -275,7 +336,8 @@ def figure_mechanism(data: pd.DataFrame, output: Path):
                 label=short,
             )
 
-    ticks = sorted(data["threads"].unique())
+    # Pack runs carry -1 for the thread count, and a log axis cannot place it
+    ticks = sorted(data.loc[data["threads"] > 0, "threads"].unique())
     for axis, title in zip(
         axes, ["Work: simplex iterations", "Time: wall clock"]
     ):
@@ -676,7 +738,7 @@ def figure_fill(fills: list, output: Path):
             facecolors="white",
             edgecolors=colour,
             linewidths=2.4,
-            label=f"{label}, same pack on another night",
+            label=f"{label}, same pack, run again",
             zorder=4,
         )
 
@@ -957,7 +1019,7 @@ def main():
     parser.add_argument(
         "--cores",
         type=int,
-        default=60,
+        default=CONTENTION_CORES,
         help="core budget the throughput figure is stated for",
     )
     parser.add_argument(
@@ -1009,6 +1071,8 @@ def main():
         10: lambda: figure_timeline(
             args.results, TIMELINE_PACKS, args.output / "10_timeline"
         ),
+        # 11 to 14 are drawn by plot_meeting_options.py into the same folder
+        15: lambda: figure_memory_to_fill(data, args.output / "15_memory_to_fill"),
     }
 
     written = []
