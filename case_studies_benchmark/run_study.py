@@ -62,6 +62,14 @@ Stages:
 16. repeat    the one thread packs of stage 15 where the curve falls, run a
               second time. Two packs that stage 14 and 15 both ran differ by
               up to a quarter, so a single pack cannot place a cliff
+17. workers omp the packs of stage 15 again, with the numerical libraries of
+              every job held to one thread. Stage 15 ran with them free, and
+              the typical day clustering of every job started about 100
+              threads on 48 cores, which is what made the reading explode
+
+Every job is launched with OMP_NUM_THREADS, OPENBLAS_NUM_THREADS and
+MKL_NUM_THREADS set to --omp-threads, 1 by default. Stages up to 16 ran
+without them, as --omp-threads 0 still does.
 
 Examples::
 
@@ -78,6 +86,7 @@ Examples::
     python run_study.py --stages 14         # what a full machine delivers
     python run_study.py --stages 15         # how full to fill it
     python run_study.py --stages 16         # the falling part of it, again
+    python run_study.py --stages 17         # stage 15 with the libraries at 1
 """
 
 import argparse
@@ -127,6 +136,16 @@ TIME_LIMIT = 2
 # different thread count does not skip the runs of the first one as already
 # done. Overridden from the command line with --threads
 THREADS = 0
+
+# Threads the numerical libraries of the reading may use: sklearn's KMeans in
+# the typical day clustering (OpenMP) and numpy's BLAS. Left alone they size
+# their pools to every core of the machine, whatever gurobi is given, and on
+# 2026-09-24 a job alone on the 48 core server started about 100 threads and
+# burned 540 cpu seconds on a 54 s reading. 48 jobs doing that at once took
+# 273 s each to read, against 43 s at one thread, and one thread was faster
+# even alone. 1 by default; 0 leaves the libraries free, which is how every
+# stage up to 16 ran. Overridden from the command line with --omp-threads
+OMP_THREADS = 1
 
 # Knobs swept in the matrix stage. typicaldays_method is left out on purpose:
 # it multiplies the model by about forty, and at full resolution it has no
@@ -487,6 +506,26 @@ def write_machine_info():
     return info
 
 
+def _job_environment():
+    """
+    Environment of a job the study launches.
+
+    The thread limits of the numerical libraries are set here rather than
+    inside adopt, because they are read once when a library is first loaded:
+    set in the environment of the new process, they are in place before
+    anything is imported.
+
+    :return: dict, a copy of this process's environment with the limits set
+    """
+    import os
+
+    environment = dict(os.environ)
+    if OMP_THREADS:
+        for variable in ["OMP_NUM_THREADS", "OPENBLAS_NUM_THREADS", "MKL_NUM_THREADS"]:
+            environment[variable] = str(OMP_THREADS)
+    return environment
+
+
 def run(command: list, dry_run: bool = False, produced: list = None):
     """
     Runs one command of the study and reports how long it took
@@ -507,7 +546,7 @@ def run(command: list, dry_run: bool = False, produced: list = None):
 
     log(f"START {printable}")
     start = time.time()
-    result = subprocess.run(command, cwd=str(BASE))
+    result = subprocess.run(command, cwd=str(BASE), env=_job_environment())
     duration = time.time() - start
 
     if produced is not None:
@@ -1639,13 +1678,18 @@ def _run_pack(threads: int, jobs: int, label: str, tag: str, dry_run: bool):
         return True
 
     start = time.time()
+    environment = _job_environment()
     processes, handles = [], []
     for job, command in enumerate(commands, start=1):
         handle = open(log_path / f"{label}_job{job:02d}.log", "w")
         handles.append(handle)
         processes.append(
             subprocess.Popen(
-                command, cwd=str(BASE), stdout=handle, stderr=subprocess.STDOUT
+                command,
+                cwd=str(BASE),
+                stdout=handle,
+                stderr=subprocess.STDOUT,
+                env=environment,
             )
         )
 
@@ -1696,6 +1740,22 @@ def stage_contention(dry_run: bool = False):
     return ok
 
 
+def _worker_count_packs():
+    """
+    The packs of stage 15, and of stage 17 which repeats them
+
+    :return: list of (threads, jobs) tuples, cheapest arm first
+    """
+    packs = []
+    for threads in CONTENTION_WORKER_THREADS:
+        for fill in CONTENTION_FILL_LEVELS[threads]:
+            jobs = max(1, round(CONTENTION_CORE_BUDGET * fill / threads))
+            # Two fills a third of a core apart round to the same pack
+            if (threads, jobs) not in packs:
+                packs.append((threads, jobs))
+    return packs
+
+
 def stage_worker_count(dry_run: bool = False):
     """
     How full to fill the machine, at one thread per job.
@@ -1715,13 +1775,7 @@ def stage_worker_count(dry_run: bool = False):
     :param bool dry_run: if True, the commands are only printed
     :return: True if every pack that was attempted succeeded
     """
-    packs = []
-    for threads in CONTENTION_WORKER_THREADS:
-        for fill in CONTENTION_FILL_LEVELS[threads]:
-            jobs = max(1, round(CONTENTION_CORE_BUDGET * fill / threads))
-            # Two fills a third of a core apart round to the same pack
-            if (threads, jobs) not in packs:
-                packs.append((threads, jobs))
+    packs = _worker_count_packs()
 
     log(
         f"=== Stage 15: {NL_CASE} worker count on "
@@ -1759,6 +1813,41 @@ def stage_repeat_fill(dry_run: bool = False):
     ok = True
     for jobs in REPEAT_ONE_THREAD_JOBS:
         ok &= _run_pack(1, jobs, f"rep{jobs}x1", "REPEAT", dry_run)
+
+    if not dry_run:
+        run([sys.executable, "run_benchmark.py", "collect"], dry_run)
+
+    return ok
+
+
+def stage_worker_count_omp(dry_run: bool = False):
+    """
+    Stage 15 again, with the numerical libraries held to OMP_THREADS threads.
+
+    Stage 15 ran with the libraries free, and every job's typical day
+    clustering started about 100 threads on the 48 core server. Reading alone,
+    that made the reading x5 slower at 48 jobs and one thread per library cut
+    it back to x1.1. What that is worth in runs an hour, with the solvers of
+    the other jobs sharing the machine, is what this measures: the same packs,
+    labelled omp instead of fill, so that they sit next to stage 15 rather than
+    on top of it.
+
+    :param bool dry_run: if True, the commands are only printed
+    :return: True if every pack that was attempted succeeded
+    """
+    if not OMP_THREADS:
+        log("Stage 17 needs --omp-threads above 0, it would repeat stage 15")
+        return False
+
+    packs = _worker_count_packs()
+    log(
+        f"=== Stage 17: {NL_CASE} worker count on {CONTENTION_CORE_BUDGET} "
+        f"cores, libraries at {OMP_THREADS} thread, {len(packs)} packs ==="
+    )
+
+    ok = True
+    for threads, jobs in packs:
+        ok &= _run_pack(threads, jobs, f"omp{jobs}x{threads}", "WORKERS_OMP", dry_run)
 
     if not dry_run:
         run([sys.executable, "run_benchmark.py", "collect"], dry_run)
@@ -1828,6 +1917,7 @@ STAGES = {
     14: stage_contention,
     15: stage_worker_count,
     16: stage_repeat_fill,
+    17: stage_worker_count_omp,
 }
 
 # The thread ladder answers a question about the machine rather than about the
@@ -1840,7 +1930,7 @@ def main():
     """
     Command line interface of the study
     """
-    global THREADS, TIME_LIMIT
+    global THREADS, TIME_LIMIT, OMP_THREADS
 
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(
@@ -1870,6 +1960,15 @@ def main():
         "skip the runs of the first one as already done",
     )
     parser.add_argument(
+        "--omp-threads",
+        dest="omp_threads",
+        type=int,
+        default=OMP_THREADS,
+        help="threads the numerical libraries of every job may use (OpenMP "
+        "and BLAS, which run the typical day clustering). 0 leaves them free, "
+        "one per core, which is how stages up to 16 ran",
+    )
+    parser.add_argument(
         "--dry-run",
         action="store_true",
         help="print what would run without running it",
@@ -1891,6 +1990,7 @@ def main():
         return
     THREADS = args.threads
     TIME_LIMIT = args.time_limit
+    OMP_THREADS = args.omp_threads
 
     started = time.time()
     if not args.dry_run:
@@ -1898,6 +1998,7 @@ def main():
         log("#" * 70)
         log("Benchmark study starting")
         log(f"Solver threads: {THREADS if THREADS else 'all cores'}")
+        log(f"Library threads: {OMP_THREADS if OMP_THREADS else 'all cores'}")
         write_machine_info()
 
     for stage in args.stages:

@@ -24,6 +24,9 @@ Examples::
 
     python plot_reading_profiles.py
     python plot_reading_profiles.py --timelines default:6 default:20 omp1:12
+    python plot_reading_profiles.py --cores 48 --machine aspenrds \
+        --profiles //server/share/case_studies_benchmark/reading_profiles \
+        --output figures/reading_profiles/server
 """
 
 import argparse
@@ -81,16 +84,18 @@ def step_bounds(steps_file: Path) -> dict:
     return {row.step: (row.t_start, row.t_end) for row in steps.itertuples()}
 
 
-def load_jobs() -> tuple:
+def load_jobs(profiles_path: Path = PROFILES_PATH) -> tuple:
     """
     Reads every job of every pack
+
+    :param Path profiles_path: reading_profiles folder
 
     :return: (jobs, series): one row per job, and the resource curve of every
         job with its step at each sample
     """
     rows, curves = [], []
 
-    for summary_file in sorted(PROFILES_PATH.glob("*/*/jobs*/job*/profile_summary.csv")):
+    for summary_file in sorted(profiles_path.glob("*/*/jobs*/job*/profile_summary.csv")):
         job_path = summary_file.parent
         pack_path = job_path.parent
         steps_file = job_path / "steps.csv"
@@ -173,7 +178,7 @@ def pack_medians(jobs: pd.DataFrame) -> pd.DataFrame:
     return medians.reset_index()
 
 
-def figure_steps(medians: pd.DataFrame, output: Path):
+def figure_steps(medians: pd.DataFrame, output: Path, machine: str):
     """
     Median time of every step against the number of jobs, one panel per arm
     """
@@ -213,7 +218,7 @@ def figure_steps(medians: pd.DataFrame, output: Path):
     handles.append(Patch(facecolor="white", edgecolor="black", hatch="///",
                          label=f"machine under {MEMORY_TIGHT_MB} MB free"))
     axes[0][0].legend(handles=handles, loc="upper left")
-    figure.suptitle("Where the reading time of one job goes, laptop, 12 cores")
+    figure.suptitle(f"Where the reading time of one job goes, {machine}")
     finalize(figure, output)
 
 
@@ -345,12 +350,19 @@ def main():
     )
     parser.add_argument("--cores", type=int, default=12,
                         help="cores of the machine the packs ran on")
+    parser.add_argument("--machine", default=None,
+                        help="name of the machine in the titles, e.g. aspenrds")
+    parser.add_argument("--profiles", type=Path, default=PROFILES_PATH,
+                        help="reading_profiles folder to read, e.g. on the share")
+    parser.add_argument("--output", type=Path, default=OUTPUT_PATH)
     args = parser.parse_args()
 
+    machine = f"{args.machine}, {args.cores} cores" if args.machine else f"{args.cores} cores"
+
     apply_publication_style()
-    jobs, series = load_jobs()
+    jobs, series = load_jobs(args.profiles)
     if jobs.empty:
-        print(f"No jobs found below {PROFILES_PATH}")
+        print(f"No jobs found below {args.profiles}")
         return
     medians = pack_medians(jobs)
 
@@ -359,9 +371,9 @@ def main():
     columns += ["clustering_cores", "memory_min_mb"]
     print(medians[columns].round(1).to_string(index=False))
 
-    figure_steps(medians, OUTPUT_PATH / "01_steps_against_jobs")
-    figure_slowdown(medians, OUTPUT_PATH / "02_slowdown_by_step")
-    figure_clustering_cores(jobs, medians, OUTPUT_PATH / "03_threads_and_cpu")
+    figure_steps(medians, args.output / "01_steps_against_jobs", machine)
+    figure_slowdown(medians, args.output / "02_slowdown_by_step")
+    figure_clustering_cores(jobs, medians, args.output / "03_threads_and_cpu")
 
     if args.timelines is None:
         packs = medians[["arm", "jobs"]].itertuples(index=False)
@@ -369,9 +381,9 @@ def main():
         packs = [(p.split(":")[0], int(p.split(":")[1])) for p in args.timelines]
     for arm, n_jobs in packs:
         figure_timeline(jobs, series, arm, n_jobs, args.cores,
-                        OUTPUT_PATH / f"04_timeline_{arm}_{n_jobs:02d}")
+                        args.output / f"04_timeline_{arm}_{n_jobs:02d}")
 
-    print(f"\nFigures written to {OUTPUT_PATH}")
+    print(f"\nFigures written to {args.output}")
 
 
 if __name__ == "__main__":

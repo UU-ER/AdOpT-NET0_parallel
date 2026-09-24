@@ -38,7 +38,9 @@ RESULTS_PATH = BASE / "results"
 # date is the day the stage ran, so a second campaign of the same stage does
 # not land on top of the first
 RULES = [
-    (r"_fill\d+x\d+_job\d+$", "2026-09-22_nl_node_stage15_workers"),
+    (r"_omp\d+x\d+_job\d+$", "2026-09-24_nl_node_stage17_workers_omp"),
+    (r"_rep\d+x\d+_job\d+$", "2026-09-23_nl_node_stage16_repeat"),
+    (r"_fill\d+x\d+_job\d+$", "2026-09-22_nl_node_stage15_n_of_workers"),
     (r"_pack\d+x\d+_job\d+$", "2026-09-22_nl_node_stage14_contention"),
     # Stages 12 and 13 share their cells at one and four threads: those ran
     # inside stage 12, so they are filed with it and stage 13's manifest

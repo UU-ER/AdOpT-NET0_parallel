@@ -387,6 +387,11 @@ class ResourceMonitor:
         ]:
             summary[column] = os.environ.get(variable, "")
 
+        # Threads the numerical libraries were allowed, empty when unset and
+        # they took every core. They run the typical day clustering, and left
+        # free they multiply the reading time of concurrent runs
+        summary["omp_num_threads"] = os.environ.get("OMP_NUM_THREADS", "")
+
         summary.update(self.metadata)
 
         with self._lock:
