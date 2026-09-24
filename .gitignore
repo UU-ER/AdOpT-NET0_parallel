@@ -161,3 +161,4 @@ Playground.py
 # Case study benchmark: generated input data and run results
 case_studies_benchmark/inputData/
 case_studies_benchmark/results/
+case_studies_benchmark/reading_profiles/

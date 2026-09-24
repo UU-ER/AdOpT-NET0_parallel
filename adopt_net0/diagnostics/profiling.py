@@ -1,3 +1,4 @@
+import cProfile
 import csv
 import logging
 import os
@@ -100,6 +101,7 @@ class ResourceMonitor:
 
         self._phase_starts = {}
         self._phase_counts = {}
+        self._cprofiles = []
         self._lock = threading.Lock()
         self._stop_event = threading.Event()
         self._thread = None
@@ -191,14 +193,32 @@ class ResourceMonitor:
     @contextmanager
     def phase(self, name: str):
         """
-        Context manager wrapping phase_start and phase_end
+        Context manager wrapping phase_start and phase_end.
+
+        A phase named in the environment variable ADOPT_CPROFILE (comma
+        separated, e.g. ADOPT_CPROFILE=read_data) is also run under cProfile,
+        once with the wall clock and, if ADOPT_CPROFILE_CPU=1, with the cpu
+        clock of the process instead. A function whose wall time grows under
+        load while its cpu time does not is waiting, one whose cpu time grows
+        as well is contending for the cores. The stats are written next to
+        the csv files as cprofile_<phase>.prof.
 
         :param str name: name of the phase
         """
+        profiled = self.enabled and name in _cprofile_phases()
+        if profiled:
+            timer = time.process_time if _cprofile_cpu() else time.perf_counter
+            profile = cProfile.Profile(timer)
+
         self.phase_start(name)
         try:
+            if profiled:
+                profile.enable()
             yield
         finally:
+            if profiled:
+                profile.disable()
+                self._cprofiles.append((name, profile))
             self.phase_end(name)
 
     def add_metadata(self, **kwargs):
@@ -446,7 +466,30 @@ class ResourceMonitor:
         _write_csv(save_path / "profile_phases.csv", phases)
         _write_csv(save_path / "profile_summary.csv", [summary])
 
+        # A phase that occurs more than once gets a numbered suffix, as in
+        # profile_phases.csv
+        counts = {}
+        for name, profile in self._cprofiles:
+            counts[name] = counts.get(name, 0) + 1
+            suffix = "" if counts[name] == 1 else f"_{counts[name]}"
+            profile.dump_stats(str(save_path / f"cprofile_{name}{suffix}.prof"))
+
         log.info(f"Resource profile written to {save_path}")
+
+
+def _cprofile_phases():
+    """
+    Returns the phases to run under cProfile, read from ADOPT_CPROFILE
+    """
+    value = os.environ.get("ADOPT_CPROFILE", "")
+    return {phase.strip() for phase in value.split(",") if phase.strip()}
+
+
+def _cprofile_cpu():
+    """
+    Returns True if cProfile is to use the cpu clock, read from ADOPT_CPROFILE_CPU
+    """
+    return os.environ.get("ADOPT_CPROFILE_CPU", "0") == "1"
 
 
 def _write_csv(path: Path, rows: list):
