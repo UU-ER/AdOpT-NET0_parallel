@@ -8,6 +8,20 @@ import requests
 from timezonefinder import TimezoneFinder
 from pathlib import Path
 
+# Columns of a carrier data file. Anything that can be set per node, carrier and
+# investment period is one of these, so both the writer below and the scenario
+# analysis catalogue read the list from here rather than keeping their own copy
+CARRIER_COLUMNS = [
+    "Demand",
+    "Import limit",
+    "Export limit",
+    "Import price",
+    "Export price",
+    "Import emission factor",
+    "Export emission factor",
+    "Generic production",
+]
+
 
 def load_climate_data_from_api(folder_path: str | Path, dataset: str = "JRC"):
     """
@@ -102,16 +116,7 @@ def fill_carrier_data(
         topology = json.load(json_file)
 
     # Define options
-    column_options = [
-        "Demand",
-        "Import limit",
-        "Export limit",
-        "Import price",
-        "Export price",
-        "Import emission factor",
-        "Export emission factor",
-        "Generic production",
-    ]
+    column_options = CARRIER_COLUMNS
 
     for period in (
         investment_periods if investment_periods else topology["investment_periods"]

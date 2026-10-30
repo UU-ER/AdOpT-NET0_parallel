@@ -1,0 +1,1160 @@
+<title>ADOPT Scenario Builder</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Archivo:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;700&display=swap">
+
+<style>
+:root {
+  --ink:        #12212a;
+  --ink-soft:   #4a6068;
+  --ink-faint:  #7b9198;
+  --ground:     #f2f5f4;
+  --surface:    #ffffff;
+  --surface-2:  #e9efee;
+  --line:       #ccd7d5;
+  --line-soft:  #e0e8e7;
+  --accent:     #0f6b6b;
+  --accent-ink: #0a4f4f;
+  --accent-soft:#ddedec;
+  --on-accent:  #ffffff;
+  --ok:         #2d7a4f;
+  --ok-soft:    #e0efe6;
+  --warn:       #9c6b0a;
+  --warn-soft:  #f7eed9;
+  --bad:        #a33224;
+  --bad-soft:   #f6e4e1;
+  --shadow:     0 1px 2px rgba(18,33,42,.06), 0 4px 14px rgba(18,33,42,.05);
+
+  --ui: "Archivo", ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif;
+  --mono: "JetBrains Mono", ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+
+  color-scheme: light;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --ink:        #e2ebe9;
+    --ink-soft:   #9db2b3;
+    --ink-faint:  #6e8688;
+    --ground:     #0d1618;
+    --surface:    #152123;
+    --surface-2:  #1c2b2d;
+    --line:       #2a3a3c;
+    --line-soft:  #21302f;
+    --accent:     #52b5ad;
+    --accent-ink: #7fcdc5;
+    --accent-soft:#15302f;
+    --on-accent:  #06201f;
+    --ok:         #6cc48d;
+    --ok-soft:    #162c20;
+    --warn:       #d9a63f;
+    --warn-soft:  #302713;
+    --bad:        #e08377;
+    --bad-soft:   #331d1a;
+    --shadow:     0 1px 2px rgba(0,0,0,.3), 0 4px 14px rgba(0,0,0,.25);
+    color-scheme: dark;
+  }
+}
+
+:root[data-theme="dark"] {
+  --ink:        #e2ebe9;
+  --ink-soft:   #9db2b3;
+  --ink-faint:  #6e8688;
+  --ground:     #0d1618;
+  --surface:    #152123;
+  --surface-2:  #1c2b2d;
+  --line:       #2a3a3c;
+  --line-soft:  #21302f;
+  --accent:     #52b5ad;
+  --accent-ink: #7fcdc5;
+  --accent-soft:#15302f;
+  --on-accent:  #06201f;
+  --ok:         #6cc48d;
+  --ok-soft:    #162c20;
+  --warn:       #d9a63f;
+  --warn-soft:  #302713;
+  --bad:        #e08377;
+  --bad-soft:   #331d1a;
+  --shadow:     0 1px 2px rgba(0,0,0,.3), 0 4px 14px rgba(0,0,0,.25);
+  color-scheme: dark;
+}
+
+* { box-sizing: border-box; }
+
+body {
+  margin: 0;
+  background: var(--ground);
+  color: var(--ink);
+  font-family: var(--ui);
+  font-size: 14px;
+  line-height: 1.5;
+  -webkit-font-smoothing: antialiased;
+}
+
+h1, h2, h3 { margin: 0; text-wrap: balance; font-weight: 600; letter-spacing: -0.01em; }
+button, input, textarea, select { font: inherit; color: inherit; }
+button { cursor: pointer; background: none; border: none; padding: 0; }
+:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; border-radius: 3px; }
+
+.mono { font-family: var(--mono); font-variant-ligatures: none; }
+
+/* ---------- header ---------- */
+
+.bar {
+  position: sticky; top: 0; z-index: 20;
+  display: flex; flex-wrap: wrap; align-items: baseline; gap: 8px 22px;
+  padding: 14px 22px;
+  background: var(--surface);
+  border-bottom: 1px solid var(--line);
+}
+.brand { display: flex; align-items: baseline; gap: 10px; }
+.brand h1 { font-size: 16px; font-weight: 700; letter-spacing: -0.02em; }
+.brand .case {
+  font-family: var(--mono); font-size: 12px; color: var(--accent);
+  background: var(--accent-soft); padding: 2px 7px; border-radius: 3px;
+}
+.bar .spacer { flex: 1 1 auto; }
+.tally { display: flex; gap: 20px; align-items: baseline; }
+.tally div { display: flex; align-items: baseline; gap: 6px; }
+.tally b { font-size: 17px; font-weight: 700; font-variant-numeric: tabular-nums; letter-spacing: -0.02em; }
+.tally span { font-size: 11px; text-transform: uppercase; letter-spacing: .07em; color: var(--ink-faint); }
+
+/* ---------- layout ---------- */
+
+main {
+  display: grid;
+  grid-template-columns: minmax(330px, 4fr) minmax(430px, 6fr);
+  gap: 1px;
+  background: var(--line);
+  min-height: calc(100vh - 57px);
+}
+.pane { background: var(--ground); display: flex; flex-direction: column; min-width: 0; }
+
+.pane-head {
+  padding: 18px 22px 12px;
+  display: flex; flex-direction: column; gap: 12px;
+  border-bottom: 1px solid var(--line-soft);
+  background: var(--ground);
+  position: sticky; top: 57px; z-index: 10;
+}
+.pane-head h2 { font-size: 13px; text-transform: uppercase; letter-spacing: .09em; color: var(--ink-soft); font-weight: 600; }
+.pane-head .lede { font-size: 13px; color: var(--ink-soft); max-width: 62ch; margin: 0; }
+
+/* ---------- catalogue ---------- */
+
+.search {
+  width: 100%; padding: 8px 11px;
+  background: var(--surface); color: var(--ink);
+  border: 1px solid var(--line); border-radius: 5px;
+  font-family: var(--mono); font-size: 13px;
+}
+.search::placeholder { color: var(--ink-faint); font-family: var(--ui); }
+
+.chips { display: flex; flex-wrap: wrap; gap: 5px; }
+.chip {
+  font-size: 11px; padding: 3px 9px; border-radius: 999px;
+  border: 1px solid var(--line); background: var(--surface); color: var(--ink-soft);
+  letter-spacing: .02em; white-space: nowrap; font-family: var(--ui);
+}
+.chip:hover { border-color: var(--accent); color: var(--accent); }
+.chip[aria-pressed="true"] { background: var(--accent); border-color: var(--accent); color: var(--on-accent); font-weight: 600; }
+.chip[aria-pressed="true"]:hover { color: var(--on-accent); }
+.chip .n { opacity: .65; margin-left: 4px; font-variant-numeric: tabular-nums; }
+.chip.mono { font-family: var(--mono); font-size: 11px; }
+
+.list { flex: 1 1 auto; overflow-y: auto; padding: 6px 12px 40px; }
+
+.row {
+  display: grid; grid-template-columns: 1fr auto; gap: 2px 12px;
+  width: 100%; text-align: left;
+  padding: 9px 10px; border-radius: 5px;
+  border: 1px solid transparent;
+}
+.row:hover { background: var(--surface); border-color: var(--line-soft); }
+.row[data-picked="true"] { background: var(--accent-soft); border-color: var(--accent); }
+.row .id { font-family: var(--mono); font-size: 12.5px; word-break: break-word; }
+.row .id .of {
+  color: var(--accent); font-weight: 500;
+  background: var(--accent-soft); padding: 1px 6px; border-radius: 3px;
+  margin-left: 7px; font-size: 11.5px; white-space: nowrap;
+}
+.row .meta { grid-column: 1 / -1; display: flex; flex-wrap: wrap; gap: 4px 10px; align-items: baseline; font-size: 11.5px; color: var(--ink-faint); }
+.row .val { font-family: var(--mono); color: var(--ink-soft); }
+.tag {
+  font-size: 10px; letter-spacing: .05em; text-transform: uppercase;
+  padding: 2px 6px; border-radius: 3px; white-space: nowrap;
+  background: var(--surface-2); color: var(--ink-soft); font-weight: 600;
+}
+.tag.carrier_data { background: var(--accent-soft); color: var(--accent-ink); }
+.tag.structural   { background: var(--warn-soft); color: var(--warn); }
+.note { font-style: italic; }
+.empty { padding: 30px 12px; color: var(--ink-faint); font-size: 13px; }
+
+/* ---------- builder ---------- */
+
+.builder { overflow-y: auto; }
+.stack { padding: 16px 22px 60px; display: flex; flex-direction: column; gap: 22px; }
+
+.block { display: flex; flex-direction: column; gap: 10px; }
+.block > header { display: flex; align-items: baseline; gap: 10px; }
+.block > header h3 { font-size: 12px; text-transform: uppercase; letter-spacing: .09em; color: var(--ink-soft); }
+.block > header .rule { flex: 1 1 auto; height: 1px; background: var(--line); }
+.block > header .count { font-size: 11px; color: var(--ink-faint); font-variant-numeric: tabular-nums; }
+
+.cards { display: flex; flex-direction: column; gap: 10px; }
+
+.card {
+  background: var(--surface); border: 1px solid var(--line);
+  border-radius: 7px; padding: 13px 15px;
+  display: flex; flex-direction: column; gap: 11px;
+  box-shadow: var(--shadow);
+}
+.card > .top { display: flex; align-items: flex-start; gap: 10px; }
+.card .name { font-weight: 600; font-size: 13.5px; }
+.card .path { font-family: var(--mono); font-size: 11.5px; color: var(--ink-faint); word-break: break-word; }
+.card .drop { margin-left: auto; color: var(--ink-faint); font-size: 16px; line-height: 1; padding: 2px 6px; border-radius: 4px; }
+.card .drop:hover { background: var(--bad-soft); color: var(--bad); }
+
+.fields { display: flex; flex-wrap: wrap; gap: 11px 14px; align-items: flex-end; }
+.field { display: flex; flex-direction: column; gap: 4px; min-width: 0; }
+.field > label { font-size: 10.5px; text-transform: uppercase; letter-spacing: .07em; color: var(--ink-faint); font-weight: 600; }
+.field input, .field select {
+  background: var(--ground); border: 1px solid var(--line); border-radius: 5px;
+  padding: 6px 9px; font-family: var(--mono); font-size: 12.5px; min-width: 0;
+}
+.field.grow { flex: 1 1 210px; }
+.field.grow input { width: 100%; }
+.field.wide { flex: 1 1 100%; }
+
+.scope { display: flex; flex-direction: column; gap: 5px; }
+.scope .chips { gap: 4px; }
+
+textarea.eq {
+  width: 100%; min-height: 122px; resize: vertical;
+  background: var(--ground); border: 1px solid var(--line); border-radius: 6px;
+  padding: 10px 12px; font-family: var(--mono); font-size: 12.5px; line-height: 1.75;
+  white-space: pre; overflow-x: auto; color: var(--ink);
+}
+
+.verdict {
+  display: flex; flex-wrap: wrap; align-items: baseline; gap: 6px 12px;
+  padding: 9px 12px; border-radius: 6px; font-size: 12.5px;
+  border: 1px solid transparent;
+}
+.verdict .lead { font-weight: 700; }
+.verdict.ok   { background: var(--ok-soft);   color: var(--ok);   border-color: var(--ok); }
+.verdict.warn { background: var(--warn-soft); color: var(--warn); border-color: var(--warn); }
+.verdict.bad  { background: var(--bad-soft);  color: var(--bad);  border-color: var(--bad); }
+.verdict .free { font-family: var(--mono); font-size: 11.5px; opacity: .9; width: 100%; }
+
+.sym { display: flex; gap: 10px; align-items: flex-end; flex-wrap: wrap; }
+
+.out { background: var(--surface); border: 1px solid var(--line); border-radius: 7px; overflow: hidden; }
+.out > header {
+  display: flex; align-items: center; gap: 10px;
+  padding: 8px 13px; border-bottom: 1px solid var(--line-soft); background: var(--surface-2);
+}
+.out > header span { font-family: var(--mono); font-size: 11.5px; color: var(--ink-soft); }
+.out pre {
+  margin: 0; padding: 13px; max-height: 340px; overflow: auto;
+  font-family: var(--mono); font-size: 11.5px; line-height: 1.6; color: var(--ink);
+}
+.btn {
+  font-size: 11.5px; font-weight: 600;
+  padding: 4px 11px; border-radius: 5px;
+  border: 1px solid var(--accent); color: var(--accent); background: var(--surface);
+}
+.btn:hover { background: var(--accent); color: var(--on-accent); }
+.btn.plain { border-color: var(--line); color: var(--ink-soft); }
+.btn.plain:hover { background: var(--surface-2); color: var(--ink); }
+.btn.right { margin-left: auto; }
+
+.hint { font-size: 12px; color: var(--ink-faint); margin: 0; }
+.hint code { font-family: var(--mono); font-size: 11.5px; background: var(--surface-2); padding: 1px 4px; border-radius: 3px; }
+
+@media (max-width: 900px) {
+  main { grid-template-columns: 1fr; }
+  .pane-head { position: static; }
+  .list { max-height: 46vh; }
+}
+@media (prefers-reduced-motion: reduce) { * { transition: none !important; animation: none !important; } }
+</style>
+
+<header class="bar">
+  <div class="brand">
+    <h1>Scenario Builder</h1>
+    <span class="case mono" id="case-name"></span>
+  </div>
+  <div class="spacer"></div>
+  <div class="tally">
+    <div><b id="t-cat">0</b><span>in catalogue</span></div>
+    <div><b id="t-picked">0</b><span>varied</span></div>
+    <div><b id="t-scn">0</b><span>scenarios</span></div>
+  </div>
+</header>
+
+<main>
+  <section class="pane">
+    <div class="pane-head">
+      <h2>Parameter catalogue</h2>
+      <p class="lede">Everything the base case exposes. Values are what it holds now &mdash; pick one to vary it.</p>
+      <input class="search mono" id="q" type="search" placeholder="capex, Import price, typicaldays&hellip;" autocomplete="off">
+      <div class="chips" id="chips"></div>
+    </div>
+    <div class="list" id="list"></div>
+  </section>
+
+  <section class="pane builder">
+    <div class="pane-head">
+      <h2>Scenario analysis</h2>
+      <p class="lede">What varies, and how. Derived quantities are defined by equations over the parameters on the left.</p>
+    </div>
+
+    <div class="stack">
+      <div class="block">
+        <header>
+          <h3>Analysis</h3>
+          <div class="rule"></div>
+        </header>
+        <div class="card">
+          <div class="fields" id="analysis"></div>
+        </div>
+      </div>
+
+      <div class="block">
+        <header>
+          <h3>Direct parameters</h3>
+          <div class="rule"></div>
+          <span class="count" id="c-direct"></span>
+        </header>
+        <div id="direct"></div>
+      </div>
+
+      <div class="block">
+        <header>
+          <h3>Derived</h3>
+          <div class="rule"></div>
+          <button class="btn plain" id="add-derived">Add block</button>
+        </header>
+        <div id="derived"></div>
+      </div>
+
+      <div class="block">
+        <header>
+          <h3>ScenarioAnalysis.json</h3>
+          <div class="rule"></div>
+          <span class="count" id="c-json"></span>
+        </header>
+        <div class="out">
+          <header>
+            <span id="out-path">save next to the input data folder</span>
+            <button class="btn right" id="copy">Copy</button>
+          </header>
+          <pre id="json"></pre>
+        </div>
+        <p class="hint">Then <code>python main_scenario_analysis.py</code> checks it against the case study and solves what it derives.</p>
+      </div>
+    </div>
+  </section>
+</main>
+
+<script>
+"use strict";
+
+/* Everything between the two markers is replaced by the data of one case study.
+   What stands between them keeps the template valid on its own */
+const DATA = /*__ADOPT_DATA__*/{
+  "catalogue": [],
+  "topology": { "nodes": [], "carriers": [], "investment_periods": [] },
+  "case_name": "case study"
+}/*__END_DATA__*/;
+const CAT = DATA.catalogue;
+const TOPO = DATA.topology;
+const SETS = ["nodes", "carriers", "investment_periods"];
+const STORE = "adopt-scenario-builder:" + DATA.case_name;
+
+/* ---------------- values a parameter suggests ---------------- */
+
+function round3(x) {
+  if (!Number.isFinite(x) || x === 0) return 0;
+  const mag = Math.pow(10, 2 - Math.floor(Math.log10(Math.abs(x))));
+  return Math.round(x * mag) / mag;
+}
+
+function baseValue(entry) {
+  const c = entry ? entry.current : null;
+  if (typeof c === "number") return c;
+  if (c && typeof c === "object" && c.defined) return c.mean;
+  return null;
+}
+
+/* Switching between set and multiply changes what a value means, so the values
+   change with it: factors around one, or numbers around what the base case
+   holds. Options, where the parameter has them, are the values themselves */
+function suggestedValues(entry, operation) {
+  if (operation === "multiply") return "0.5, 1, 2";
+  if (entry && Array.isArray(entry.options) && entry.options.length) {
+    return entry.options.join(", ");
+  }
+  const base = baseValue(entry);
+  if (base === null) return "";
+  if (base === 0) return "0, 1, 2";
+  return [round3(base * 0.5), round3(base), round3(base * 1.5)].join(", ");
+}
+
+/* ---------------- state ---------------- */
+
+/* Opening on an empty page shows nothing of what the page does, so a first
+   visit starts from the case study itself: one parameter it actually defines,
+   and the equation a total spread over the nodes always begins with. That
+   equation is deliberately short of the splits it needs, which is the state the
+   verdict below it exists to report */
+function starter() {
+  const state = {
+    name: DATA.case_name + "_analysis",
+    combination: "grid",
+    samples: 100,
+    direct: [],
+    derived: []
+  };
+
+  const defined = CAT.filter(e =>
+    e.target === "carrier_data" && e.current && e.current.defined
+  );
+  const first = defined.find(e => e.parameter === "Import price") || defined[0];
+
+  if (first) {
+    state.direct.push({
+      key: keyFor(first),
+      parameter: first.parameter,
+      target: first.target,
+      scope: { carriers: first.scope.carriers.slice() },
+      operation: "multiply",
+      values: suggestedValues(first, "multiply")
+    });
+  }
+
+  const carrier = (TOPO.carriers || [])[0];
+  if (carrier && (TOPO.nodes || []).length > 1) {
+    state.derived.push({
+      name: "demand_allocation",
+      symbols: [{ name: "total_demand_TWh", values: "5, 10, 15" }],
+      defines: [
+        "mean_demand_MW == total_demand_TWh * 1e6 / 8760",
+        "sum(Demand[" + carrier + ", n] for n in nodes) == mean_demand_MW"
+      ].join("\n")
+    });
+  }
+
+  return state;
+}
+
+const blank = starter;
+
+let S;
+try {
+  const saved = localStorage.getItem(STORE);
+  S = saved ? JSON.parse(saved) : blank();
+} catch (e) { S = blank(); }
+if (!S || !Array.isArray(S.direct) || !Array.isArray(S.derived)) S = blank();
+
+function save() {
+  try { localStorage.setItem(STORE, JSON.stringify(S)); } catch (e) { /* private window */ }
+}
+
+/* ---------------- equation reading ----------------
+   Counts unknowns the way the python side does: expand the sums over a set,
+   turn every indexed reference into one symbol, then whatever is left that the
+   analysis does not give a value to is an unknown. Not a solver, a counter. */
+
+function matchingParen(text, start) {
+  let depth = 0;
+  for (let i = start; i < text.length; i++) {
+    if (text[i] === "(") depth++;
+    else if (text[i] === ")") { depth--; if (depth === 0) return i; }
+  }
+  return -1;
+}
+
+function expandSums(eq) {
+  let guard = 0;
+  while (guard++ < 40) {
+    const m = /\bsum\s*\(/.exec(eq);
+    if (!m) return eq;
+    const open = m.index + m[0].length - 1;
+    const close = matchingParen(eq, open);
+    if (close < 0) throw new Error("unclosed parenthesis");
+    const inside = eq.slice(open + 1, close);
+    const c = /^([\s\S]*?)\s+for\s+(\w+)\s+in\s+(\w+)\s*$/.exec(inside);
+    if (!c) throw new Error("sum(...) needs 'for <index> in <set>'");
+    const [, expr, idx, setName] = c;
+    const members = TOPO[setName];
+    if (!members) throw new Error("'" + setName + "' is not a set of the topology");
+    const terms = members.map(v => expr.replace(new RegExp("\\b" + idx + "\\b", "g"), v));
+    eq = eq.slice(0, m.index) + "(" + terms.join(" + ") + ")" + eq.slice(close + 1);
+  }
+  return eq;
+}
+
+function encodeRefs(eq, refs) {
+  return eq.replace(/(\w+)\s*\[([^\]]*)\]/g, (_, name, inner) => {
+    const idx = inner.split(",").map(s => s.trim()).filter(Boolean);
+    for (const token of idx) {
+      if (!SETS.some(s => (TOPO[s] || []).includes(token))) {
+        throw new Error("'" + token + "' is not a node, a carrier or an investment period");
+      }
+    }
+    const sym = "ref_" + (name + "_" + idx.join("_")).replace(/\W/g, "_");
+    refs.set(sym, { parameter: name, written: name + "[" + idx.join(", ") + "]" });
+    return sym;
+  });
+}
+
+const KNOWN = new Set(["e", "E", "pi", "abs", "min", "max"]);
+
+function readBlock(block) {
+  const lines = String(block.defines || "").split("\n").map(s => s.trim()).filter(Boolean);
+  const declared = new Set((block.symbols || []).map(s => s.name).filter(Boolean));
+  const refs = new Map();
+  const unknowns = [];
+  const seen = new Set();
+  const errors = [];
+
+  for (const line of lines) {
+    if (!line.includes("==")) { errors.push("no '==' in: " + line); continue; }
+    let encoded;
+    try { encoded = encodeRefs(expandSums(line), refs); }
+    catch (err) { errors.push(err.message); continue; }
+
+    const tokens = encoded.match(/(?<![\w.])[A-Za-z_]\w*/g) || [];
+    for (const t of tokens) {
+      if (declared.has(t) || KNOWN.has(t) || seen.has(t)) continue;
+      seen.add(t);
+      unknowns.push(t);
+    }
+  }
+
+  const known = new Set(CAT.map(e => e.parameter));
+  for (const r of refs.values()) {
+    if (!known.has(r.parameter)) {
+      errors.push("'" + r.parameter + "' is not a parameter of this case study");
+    }
+  }
+
+  return {
+    equations: lines.length,
+    unknowns: unknowns.sort().map(u => refs.has(u) ? refs.get(u).written : u),
+    errors: [...new Set(errors)]
+  };
+}
+
+/* ---------------- scenario arithmetic ---------------- */
+
+const parseValues = s => String(s || "").split(",").map(v => v.trim()).filter(Boolean);
+
+function scenarioCount() {
+  const lengths = [];
+  S.direct.forEach(d => lengths.push(parseValues(d.values).length));
+  S.derived.forEach(b => (b.symbols || []).forEach(s => lengths.push(parseValues(s.values).length)));
+  const live = lengths.filter(n => n > 0);
+  if (!live.length) return 0;
+  if (S.combination === "lhs") return Number(S.samples) || 0;
+  if (S.combination === "list") return Math.max.apply(null, live);
+  return live.reduce((a, b) => a * b, 1);
+}
+
+/* ---------------- the json ---------------- */
+
+function coerce(v) {
+  const n = Number(v);
+  return v !== "" && Number.isFinite(n) ? n : v;
+}
+
+/* A carrier data column exists once per carrier, so the column name on its own
+   names two different things. The carrier is part of what the entry is, not of
+   how it is narrowed, so it is shown wherever the entry is */
+function fixedScope(entry) {
+  if (!entry || entry.target !== "carrier_data") return "";
+  const carriers = (entry.scope && entry.scope.carriers) || [];
+  return carriers.join(", ");
+}
+
+/* What tells two entries apart. The carrier has to be in here: without it the
+   Import price of hydrogen and of electricity are one entry, so picking one
+   marks both and the analysis reads back whichever came first */
+function identityOf(entry) {
+  return entry.parameter + "|" + entry.target + "|" + fixedScope(entry);
+}
+
+const entryOf = d => CAT.find(e => identityOf(e) === identityOf(d));
+
+function displayName(entry) {
+  const fixed = fixedScope(entry);
+  return fixed ? entry.parameter + " · " + fixed : entry.parameter;
+}
+
+/* The carrier belongs in the name the analysis gives a parameter: Import price
+   of hydrogen and of electricity are two parameters, not one picked twice */
+function keyFor(entry) {
+  return [entry.parameter.split("/").pop(), fixedScope(entry)]
+    .filter(Boolean).join("_").toLowerCase().replace(/\W+/g, "_");
+}
+
+function buildJSON() {
+  const out = {
+    analysis: {
+      name: { description: "Name of the scenario analysis. The results of every scenario are written to a folder of this name.", value: S.name },
+      combination: { description: "How the values of the parameters are combined into scenarios.", options: ["grid", "list", "lhs"], value: S.combination },
+      n_samples: { description: "Number of scenarios drawn if combination is lhs. Ignored otherwise.", value: Number(S.samples) || 100 },
+      seed: { description: "Seed of the sampler, so that an analysis that is run again gives the same scenarios.", value: 42 },
+      naming: { description: "How a scenario is named, which is also the name of the folder its results go to.", options: ["readable", "hashed"], value: "readable" }
+    },
+    parameters: {},
+    derived: {}
+  };
+
+  S.direct.forEach(d => {
+    const entry = entryOf(d);
+    const p = {
+      description: entry && entry.description ? entry.description : d.parameter,
+      target: d.target,
+      parameter: d.parameter
+    };
+    if (d.scope && Object.keys(d.scope).length) p.scope = d.scope;
+    p.operation = d.operation;
+    p.values = parseValues(d.values).map(coerce);
+    out.parameters[d.key] = p;
+  });
+
+  S.derived.forEach(b => {
+    const symbols = {};
+    (b.symbols || []).forEach(s => {
+      if (!s.name) return;
+      symbols[s.name] = { description: s.name, values: parseValues(s.values).map(coerce) };
+    });
+    out.derived[b.name] = {
+      description: "Defined by the equations below.",
+      aggregate: "mean",
+      symbols,
+      defines: String(b.defines || "").split("\n").map(s => s.trim()).filter(Boolean),
+      checks: []
+    };
+  });
+
+  return out;
+}
+
+/* ---------------- small builders ---------------- */
+
+function field(label, node, extra) {
+  const wrap = document.createElement("div");
+  wrap.className = "field" + (extra ? " " + extra : "");
+  const lab = document.createElement("label");
+  lab.textContent = label;
+  wrap.append(lab, node);
+  return wrap;
+}
+
+function input(value, on, placeholder) {
+  const i = document.createElement("input");
+  i.type = "text";
+  i.value = value == null ? "" : value;
+  if (placeholder) i.placeholder = placeholder;
+  i.oninput = () => on(i.value);
+  return i;
+}
+
+function select(options, value, on) {
+  const s = document.createElement("select");
+  options.forEach(o => {
+    const opt = document.createElement("option");
+    opt.value = o; opt.textContent = o;
+    if (o === value) opt.selected = true;
+    s.appendChild(opt);
+  });
+  s.onchange = () => on(s.value);
+  return s;
+}
+
+function chip(label, pressed, on, mono) {
+  const b = document.createElement("button");
+  b.type = "button";
+  b.className = "chip" + (mono ? " mono" : "");
+  b.setAttribute("aria-pressed", String(pressed));
+  b.textContent = label;
+  b.onclick = on;
+  return b;
+}
+
+/* ---------------- catalogue pane ---------------- */
+
+let filter = "all";
+let query = "";
+const TARGETS = ["all", "config", "carrier_data", "technology", "network", "structural"];
+
+function renderChips() {
+  const host = document.getElementById("chips");
+  host.textContent = "";
+  TARGETS.forEach(t => {
+    const n = t === "all" ? CAT.length : CAT.filter(e => e.target === t).length;
+    if (!n) return;
+    const b = chip(t.replace(/_/g, " "), filter === t, () => { filter = t; renderChips(); renderList(); });
+    const c = document.createElement("span");
+    c.className = "n";
+    c.textContent = n;
+    b.appendChild(c);
+    host.appendChild(b);
+  });
+}
+
+function describeCurrent(e) {
+  const c = e.current;
+  if (c === null || c === undefined) return "—";
+  if (typeof c === "object" && !Array.isArray(c) && "defined" in c) {
+    if (!c.defined) return "not set in the base case";
+    const mean = c.mean.toLocaleString(undefined, { maximumFractionDigits: 2 });
+    return "mean " + mean + (c.differs_between_nodes ? " · differs by node" : " · same everywhere");
+  }
+  const s = Array.isArray(c) ? "[" + c.join(", ") + "]" : String(c);
+  return s.length > 46 ? s.slice(0, 45) + "…" : s;
+}
+
+function renderList() {
+  const host = document.getElementById("list");
+  host.textContent = "";
+  const q = query.toLowerCase();
+  const picked = new Set(S.direct.map(identityOf));
+
+  const rows = CAT.filter(e =>
+    (filter === "all" || e.target === filter) &&
+    (!q || e.parameter.toLowerCase().includes(q) || (e.description || "").toLowerCase().includes(q))
+  );
+
+  if (!rows.length) {
+    const p = document.createElement("p");
+    p.className = "empty";
+    p.textContent = "Nothing matches “" + query + "”.";
+    host.appendChild(p);
+    return;
+  }
+
+  rows.slice(0, 400).forEach(e => {
+    const b = document.createElement("button");
+    b.className = "row";
+    b.dataset.picked = String(picked.has(identityOf(e)));
+
+    const id = document.createElement("span");
+    id.className = "id";
+    id.textContent = e.parameter;
+    const fixed = fixedScope(e);
+    if (fixed) {
+      const of = document.createElement("span");
+      of.className = "of";
+      of.textContent = fixed;
+      id.appendChild(of);
+    }
+
+    const tag = document.createElement("span");
+    tag.className = "tag " + e.target;
+    tag.textContent = e.target.replace(/_/g, " ");
+
+    const meta = document.createElement("span");
+    meta.className = "meta";
+    const val = document.createElement("span");
+    val.className = "val";
+    val.textContent = describeCurrent(e);
+    meta.appendChild(val);
+    const scopes = Object.keys(e.scope || {});
+    if (scopes.length) {
+      const sc = document.createElement("span");
+      sc.className = "note";
+      sc.textContent = scopes
+        .map(k => e.scope[k].length + " " + k.replace("investment_periods", "periods"))
+        .join(", ");
+      meta.appendChild(sc);
+    }
+
+    b.append(id, tag, meta);
+    b.onclick = () => pick(e);
+    host.appendChild(b);
+  });
+}
+
+function uniqueKey(base) {
+  let key = base, i = 2;
+  while (S.direct.some(d => d.key === key)) key = base + "_" + i++;
+  return key;
+}
+
+function pick(entry) {
+  const at = S.direct.findIndex(d => identityOf(d) === identityOf(entry));
+  if (at >= 0) { S.direct.splice(at, 1); renderAll(); return; }
+
+  const base = keyFor(entry);
+
+  const scope = {};
+  // A carrier data column belongs to one carrier, so that much is never a choice
+  if (entry.target === "carrier_data" && entry.scope && entry.scope.carriers) {
+    scope.carriers = entry.scope.carriers.slice();
+  }
+  const operation = baseValue(entry) !== null && !(entry.options || []).length ? "multiply" : "set";
+
+  S.direct.push({
+    key: uniqueKey(base),
+    parameter: entry.parameter,
+    target: entry.target,
+    scope,
+    operation,
+    values: suggestedValues(entry, operation)
+  });
+  renderAll();
+}
+
+/* ---------------- builder pane ---------------- */
+
+function renderAnalysis() {
+  const host = document.getElementById("analysis");
+  host.textContent = "";
+  host.append(
+    field("name of the analysis", input(S.name, v => { S.name = v; sync(); }), "grow"),
+    field("combination", select(["grid", "list", "lhs"], S.combination, v => { S.combination = v; renderAll(); })),
+    field("samples (lhs only)", input(S.samples, v => { S.samples = v; sync(); }))
+  );
+}
+
+/* Nodes and periods are chosen from what the case study has, never typed. No
+   chip pressed means every member, which is what an absent scope means to the
+   writers of the input data */
+function scopeField(d, entry, key) {
+  const members = entry.scope[key];
+  const chosen = (d.scope && d.scope[key]) || [];
+
+  const wrap = document.createElement("div");
+  wrap.className = "field scope wide";
+
+  const lab = document.createElement("label");
+  lab.textContent = key.replace("investment_periods", "investment periods") +
+    (chosen.length ? " · " + chosen.length + " of " + members.length : " · all " + members.length);
+  wrap.appendChild(lab);
+
+  const chips = document.createElement("div");
+  chips.className = "chips";
+
+  chips.appendChild(chip("all", chosen.length === 0, () => {
+    if (d.scope) delete d.scope[key];
+    renderAll();
+  }));
+
+  members.forEach(member => {
+    chips.appendChild(chip(member, chosen.includes(member), () => {
+      d.scope = d.scope || {};
+      const list = (d.scope[key] || []).slice();
+      const at = list.indexOf(member);
+      if (at >= 0) list.splice(at, 1); else list.push(member);
+      if (list.length) d.scope[key] = members.filter(m => list.includes(m));
+      else delete d.scope[key];
+      renderAll();
+    }, true));
+  });
+
+  wrap.appendChild(chips);
+  return wrap;
+}
+
+function valuesField(d, entry) {
+  // A parameter with options offers them, rather than asking them to be typed
+  const options = (entry && entry.options) || [];
+  if (d.operation === "set" && options.length) {
+    const chosen = parseValues(d.values);
+    const wrap = document.createElement("div");
+    wrap.className = "field scope wide";
+    const lab = document.createElement("label");
+    lab.textContent = "values · " + chosen.length + " of " + options.length;
+    wrap.appendChild(lab);
+    const chips = document.createElement("div");
+    chips.className = "chips";
+    options.forEach(option => {
+      const text = String(option);
+      chips.appendChild(chip(text, chosen.includes(text), () => {
+        const list = chosen.slice();
+        const at = list.indexOf(text);
+        if (at >= 0) list.splice(at, 1); else list.push(text);
+        d.values = options.filter(o => list.includes(String(o))).join(", ");
+        renderAll();
+      }, true));
+    });
+    wrap.appendChild(chips);
+    return wrap;
+  }
+
+  return field("values", input(d.values, v => { d.values = v; sync(); }, "20, 40, 60"), "grow");
+}
+
+function renderDirect() {
+  const host = document.getElementById("direct");
+  host.textContent = "";
+  document.getElementById("c-direct").textContent = S.direct.length ? S.direct.length + " varied" : "";
+
+  if (!S.direct.length) {
+    const p = document.createElement("p");
+    p.className = "hint";
+    p.textContent = "Nothing picked yet. Choose a parameter from the catalogue on the left.";
+    host.appendChild(p);
+    return;
+  }
+
+  const wrap = document.createElement("div");
+  wrap.className = "cards";
+
+  S.direct.forEach((d, i) => {
+    const entry = entryOf(d);
+    const card = document.createElement("div");
+    card.className = "card";
+
+    const top = document.createElement("div");
+    top.className = "top";
+    const names = document.createElement("div");
+    const nm = document.createElement("div");
+    nm.className = "name";
+    nm.textContent = d.key;
+    const pt = document.createElement("div");
+    pt.className = "path";
+    pt.textContent = d.target + " · " + displayName(entry || d);
+    names.append(nm, pt);
+    const drop = document.createElement("button");
+    drop.className = "drop";
+    drop.title = "Remove";
+    drop.textContent = "×";
+    drop.onclick = () => { S.direct.splice(i, 1); renderAll(); };
+    top.append(names, drop);
+
+    const fields = document.createElement("div");
+    fields.className = "fields";
+    fields.append(
+      field("name in the analysis", input(d.key, v => { d.key = v; sync(); })),
+      field("operation", select(["set", "multiply"], d.operation, v => {
+        d.operation = v;
+        d.values = suggestedValues(entry, v);
+        renderAll();
+      })),
+      valuesField(d, entry)
+    );
+
+    // Narrowing is offered only where the parameter has a scope to narrow, and
+    // a carrier data column is already tied to its carrier
+    Object.keys((entry && entry.scope) || {}).forEach(key => {
+      if (entry.target === "carrier_data" && key === "carriers") return;
+      fields.appendChild(scopeField(d, entry, key));
+    });
+
+    const n = parseValues(d.values).length;
+    const tail = document.createElement("p");
+    tail.className = "hint";
+    const base = baseValue(entry);
+    tail.textContent = n
+      ? n + (n === 1 ? " value" : " values") + " · " + (d.operation === "multiply"
+          ? "multiplies what the base case holds" + (base === null ? "" : " (" + round3(base) + ")")
+          : "replaces it")
+      : "No values yet, so this parameter does not vary.";
+
+    card.append(top, fields, tail);
+    wrap.appendChild(card);
+  });
+
+  host.appendChild(wrap);
+}
+
+function renderDerived() {
+  const host = document.getElementById("derived");
+  host.textContent = "";
+
+  const wrap = document.createElement("div");
+  wrap.className = "cards";
+
+  S.derived.forEach((b, i) => {
+    const card = document.createElement("div");
+    card.className = "card";
+
+    const top = document.createElement("div");
+    top.className = "top";
+    const names = document.createElement("div");
+    const nm = document.createElement("div");
+    nm.className = "name";
+    nm.textContent = b.name || "unnamed block";
+    const pt = document.createElement("div");
+    pt.className = "path";
+    pt.textContent = "defined by equations over the catalogue";
+    names.append(nm, pt);
+    const drop = document.createElement("button");
+    drop.className = "drop";
+    drop.title = "Remove";
+    drop.textContent = "×";
+    drop.onclick = () => { S.derived.splice(i, 1); renderAll(); };
+    top.append(names, drop);
+    card.appendChild(top);
+
+    const head = document.createElement("div");
+    head.className = "fields";
+    head.appendChild(field("block name", input(b.name, v => { b.name = v; sync(); })));
+    card.appendChild(head);
+
+    const symHead = document.createElement("p");
+    symHead.className = "hint";
+    symHead.textContent = "Symbols the analysis gives values to:";
+    card.appendChild(symHead);
+
+    (b.symbols || []).forEach((s, j) => {
+      const row = document.createElement("div");
+      row.className = "sym";
+      row.append(
+        field("symbol", input(s.name, v => { s.name = v; sync(); refreshVerdict(card, b); }), "grow"),
+        field("values", input(s.values, v => { s.values = v; sync(); }, "5, 10, 15"), "grow")
+      );
+      const del = document.createElement("button");
+      del.className = "drop";
+      del.textContent = "×";
+      del.title = "Remove symbol";
+      del.onclick = () => { b.symbols.splice(j, 1); renderAll(); };
+      row.appendChild(del);
+      card.appendChild(row);
+    });
+
+    const addSym = document.createElement("button");
+    addSym.className = "btn plain";
+    addSym.style.alignSelf = "flex-start";
+    addSym.textContent = "Add symbol";
+    addSym.onclick = () => { (b.symbols = b.symbols || []).push({ name: "", values: "" }); renderAll(); };
+    card.appendChild(addSym);
+
+    const eqHead = document.createElement("p");
+    eqHead.className = "hint";
+    eqHead.innerHTML = "One equation per line. Reference a parameter as <code>" +
+      exampleReference() + "</code>, sum over a set as <code>sum(" +
+      exampleReference("n") + " for n in nodes)</code>.";
+    card.appendChild(eqHead);
+
+    const ta = document.createElement("textarea");
+    ta.className = "eq";
+    ta.spellcheck = false;
+    ta.value = b.defines || "";
+    ta.oninput = () => { b.defines = ta.value; sync(); refreshVerdict(card, b); };
+    card.appendChild(ta);
+
+    const verdict = document.createElement("div");
+    verdict.className = "verdict";
+    card.appendChild(verdict);
+    refreshVerdict(card, b);
+
+    wrap.appendChild(card);
+  });
+
+  if (!S.derived.length) {
+    const p = document.createElement("p");
+    p.className = "hint";
+    p.textContent = "No derived quantities. Add a block for something the input data does not hold directly, such as a system total spread over the nodes.";
+    wrap.appendChild(p);
+  }
+
+  host.appendChild(wrap);
+}
+
+function exampleReference(index) {
+  const carrier = (TOPO.carriers || ["carrier"])[0];
+  const node = index || (TOPO.nodes || ["node"])[0];
+  return "Demand[" + carrier + ", " + node + "]";
+}
+
+function refreshVerdict(card, block) {
+  const el = card.querySelector(".verdict");
+  if (!el) return;
+  const r = readBlock(block);
+  el.textContent = "";
+
+  const lead = document.createElement("span");
+  lead.className = "lead";
+  const body = document.createElement("span");
+
+  if (r.errors.length) {
+    el.className = "verdict bad";
+    lead.textContent = "Will not parse";
+    body.textContent = r.errors[0];
+  } else if (!r.equations) {
+    el.className = "verdict warn";
+    lead.textContent = "No equations";
+    body.textContent = "nothing is written yet";
+  } else if (r.unknowns.length === r.equations) {
+    el.className = "verdict ok";
+    lead.textContent = "Determined";
+    body.textContent = r.equations + " equations, " + r.unknowns.length + " unknowns";
+  } else if (r.unknowns.length > r.equations) {
+    const missing = r.unknowns.length - r.equations;
+    el.className = "verdict warn";
+    lead.textContent = missing + " more " + (missing === 1 ? "equation" : "equations") + " needed";
+    body.textContent = r.equations + " equations for " + r.unknowns.length +
+      " unknowns. An unknown left free is usually an assumption you have not written down.";
+  } else {
+    el.className = "verdict bad";
+    lead.textContent = "Over-determined";
+    body.textContent = r.equations + " equations for " + r.unknowns.length +
+      " unknowns, so there may be no solution.";
+  }
+
+  el.append(lead, body);
+
+  if (r.unknowns.length && !r.errors.length) {
+    const free = document.createElement("span");
+    free.className = "free";
+    free.textContent = "unknowns: " + r.unknowns.join(", ");
+    el.appendChild(free);
+  }
+}
+
+/* ---------------- wiring ---------------- */
+
+function sync() {
+  save();
+  document.getElementById("t-picked").textContent =
+    S.direct.length + S.derived.reduce((n, b) => n + (b.symbols || []).length, 0);
+  document.getElementById("t-scn").textContent = scenarioCount().toLocaleString();
+  const json = JSON.stringify(buildJSON(), null, 4);
+  document.getElementById("json").textContent = json;
+  document.getElementById("c-json").textContent = json.split("\n").length + " lines";
+}
+
+function renderAll() {
+  renderChips();
+  renderList();
+  renderAnalysis();
+  renderDirect();
+  renderDerived();
+  sync();
+}
+
+document.getElementById("case-name").textContent = DATA.case_name;
+document.getElementById("t-cat").textContent = CAT.length;
+document.getElementById("out-path").textContent = DATA.case_name + "/ScenarioAnalysis.json";
+document.getElementById("q").oninput = (e) => { query = e.target.value; renderList(); };
+
+document.getElementById("add-derived").onclick = () => {
+  S.derived.push({ name: "new_block", symbols: [{ name: "", values: "" }], defines: "" });
+  renderAll();
+};
+
+document.getElementById("copy").onclick = async (e) => {
+  const btn = e.currentTarget;
+  try {
+    await navigator.clipboard.writeText(document.getElementById("json").textContent);
+    btn.textContent = "Copied";
+  } catch (err) {
+    const range = document.createRange();
+    range.selectNodeContents(document.getElementById("json"));
+    const sel = window.getSelection();
+    sel.removeAllRanges();
+    sel.addRange(range);
+    btn.textContent = "Selected";
+  }
+  setTimeout(() => { btn.textContent = "Copy"; }, 1600);
+};
+
+renderAll();
+</script>

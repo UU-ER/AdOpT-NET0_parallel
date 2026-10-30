@@ -11,6 +11,9 @@ authors = [
 ]
 readme = "README.md"
 license = "MIT"
+include = [
+  { path = "adopt_net0/scenario_analysis/*.html", format = ["sdist", "wheel"] },
+]
 homepage = "https://github.com/UU-ER/AdOpT-NET0"
 repository = "https://github.com/UU-ER/AdOpT-NET0"
 documentation = "https://adopt-net0.readthedocs.io"
@@ -36,6 +39,7 @@ openpyxl = ">=3.1.2"
 pwlf = ">=2.2.1"
 scandir = ">=1.10.0"
 psutil = ">=5.9.0"
+sympy = ">=1.12"
 
 [tool.poetry.group.test.dependencies]
 pytest = ">=8.1.1"
