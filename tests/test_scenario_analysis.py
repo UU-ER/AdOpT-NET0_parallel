@@ -1,16 +1,25 @@
 import json
 
+import numpy as np
+import pandas as pd
 import pytest
 
 import adopt_net0.data_preprocessing as dp
 from adopt_net0.data_preprocessing.data_loading import CARRIER_COLUMNS
 from adopt_net0.scenario_analysis import (
+    ScenarioHub,
+    collect_results,
     parse_equations,
+    plan_scenarios,
     read_definition,
+    read_plan,
+    scenario_name,
     scan_input_data,
     solve_derived,
     validate_definition,
     write_catalogue,
+    write_plan,
+    write_scenario,
 )
 
 # The topology template has two nodes, which is the smallest case in which a
@@ -183,6 +192,40 @@ def test_scenario_analysis_template(request):
     assert any("changes nothing" in problem for problem in problems)
 
 
+def test_scenario_hub_plans_from_the_definition(request):
+    """
+    Tests that ScenarioHub reads, checks and plans an analysis into the output
+    folder of its resources, and refuses a definition with problems
+    """
+    data_folder_path = _built_case_study(request)
+    output_folder = request.config.result_folder_path / "hub"
+
+    definition = dp.initialize_scenario_analysis_template()
+    definition["analysis"]["name"]["value"] = "days"
+    definition["resources"]["output_folder"]["value"] = str(output_folder)
+    definition["parameters"]["days"] = {
+        "short": "td",
+        "target": "config",
+        "parameter": "optimization/typicaldays/N",
+        "operation": "set",
+        "values": [4, 8],
+    }
+    with open(data_folder_path / "ScenarioAnalysis.json", "w") as json_file:
+        json.dump(definition, json_file)
+
+    analysis = ScenarioHub()
+    analysis.read_definition(data_folder_path)
+    assert analysis.analysis_path == output_folder / "days"
+
+    analysis.plan()
+    assert [scenario["name"] for scenario in analysis.scenarios] == ["td-4", "td-8"]
+    assert (output_folder / "days" / "scenarios.csv").exists()
+
+    analysis.definition["resources"]["cores"]["value"] = 0
+    with pytest.raises(Exception, match="cores"):
+        analysis.check()
+
+
 def test_definition_of_a_direct_parameter(request):
     """
     Tests that a parameter of the catalogue validates and a made up one does not
@@ -334,7 +377,7 @@ def test_write_builder(request):
     import json as json_module
 
     from adopt_net0.scenario_analysis import write_builder
-    from adopt_net0.scenario_analysis.builder import END_PLACEHOLDER, PLACEHOLDER
+    from adopt_net0.scenario_analysis.build_analysis import END_PLACEHOLDER, PLACEHOLDER
 
     data_folder_path = _built_case_study(request)
     page_path = write_builder(data_folder_path)
@@ -361,3 +404,206 @@ def test_write_builder(request):
 
     # The data sits inside a script tag, so nothing in it may close one
     assert "</script" not in page[start:end]
+
+
+def _plan_definition(combination: str, naming: str = "readable") -> dict:
+    """
+    A definition with two direct parameters and one derived symbol, enough to
+    tell the three combinations apart
+
+    :param str combination: grid, list or lhs
+    :param str naming: short, readable or hashed
+    :return: the definition
+    """
+    return {
+        "analysis": {
+            "name": {"value": "test"},
+            "combination": {"value": combination},
+            "n_samples": {"value": 5},
+            "seed": {"value": 42},
+            "naming": {"value": naming},
+        },
+        "parameters": {
+            "price": {"values": [100, 200]},
+            "capex": {"values": [0.5, 1.5]},
+        },
+        "derived": {"demand": {"symbols": {"total": {"values": [5, 10]}}}},
+    }
+
+
+def test_plan_grid_and_list():
+    """
+    Tests that grid crosses every value and list pairs them element by element
+    """
+    grid = plan_scenarios(_plan_definition("grid"))
+    assert len(grid) == 8
+    assert grid[0]["values"] == {"price": 100, "capex": 0.5, "total": 5}
+    assert grid[0]["label"] == "price-100__capex-0.5__total-5"
+    assert grid[0]["name"] == grid[0]["label"]
+
+    paired = plan_scenarios(_plan_definition("list"))
+    assert [scenario["values"]["price"] for scenario in paired] == [100, 200]
+    assert [scenario["values"]["total"] for scenario in paired] == [5, 10]
+
+    uneven = _plan_definition("list")
+    uneven["parameters"]["price"]["values"] = [100, 200, 300]
+    with pytest.raises(ValueError):
+        plan_scenarios(uneven)
+
+
+def test_plan_lhs_is_reproducible():
+    """
+    Tests that the same seed draws the same scenarios, inside the range given
+    """
+    first = plan_scenarios(_plan_definition("lhs", "hashed"))
+    second = plan_scenarios(_plan_definition("lhs", "hashed"))
+    assert len(first) == 5
+    assert first == second
+    for scenario in first:
+        assert 100 <= scenario["values"]["price"] <= 200
+        assert 0.5 <= scenario["values"]["capex"] <= 1.5
+
+
+def test_scenario_name_depends_on_values_only():
+    """
+    Tests that a name is a function of the values, and that a hashed name is
+    the same whatever order the values come in
+    """
+    values = {"price": 100, "capex": 0.5}
+    assert scenario_name(values) == "price-100__capex-0.5"
+    assert scenario_name(values, "hashed") == scenario_name(
+        {"capex": 0.5, "price": 100}, "hashed"
+    )
+    assert scenario_name(values, "hashed") != scenario_name(
+        {"price": 100, "capex": 0.6}, "hashed"
+    )
+
+    assert len(scenario_name(values, "hashed")) == 11
+
+    short = {"price": "p"}
+    assert scenario_name(values, "short", short) == "p-100__capex-0.5"
+    assert scenario_name(values, "readable", short) == "price-100__capex-0.5"
+
+
+def test_plan_names_by_the_choice_of_the_analysis():
+    """
+    Tests that the names follow analysis/naming and the aliases, that the label
+    stays the full spelling, and that a name too long is refused rather than
+    hashed behind the user's back
+    """
+    definition = _plan_definition("grid", "short")
+    definition["parameters"]["price"]["short"] = "p"
+    definition["derived"]["demand"]["symbols"]["total"]["short"] = "d"
+    scenarios = plan_scenarios(definition)
+    assert scenarios[0]["name"] == "p-100__capex-0.5__d-5"
+    assert scenarios[0]["label"] == "price-100__capex-0.5__total-5"
+
+    hashed = plan_scenarios(_plan_definition("grid", "hashed"))
+    assert all(len(scenario["name"]) == 11 for scenario in hashed)
+    assert hashed[0]["label"] == "price-100__capex-0.5__total-5"
+
+    too_long = _plan_definition("grid", "readable")
+    too_long["parameters"]["a_parameter_with_a_very_long_name" * 7] = {"values": [1]}
+    with pytest.raises(ValueError, match="hashed"):
+        plan_scenarios(too_long)
+
+
+def test_short_aliases_are_checked():
+    """
+    Tests that an alias a folder cannot hold, and two parameters spelled the
+    same, are reported
+    """
+    from adopt_net0.scenario_analysis.define_analysis import _validate_short
+
+    definition = _plan_definition("grid", "short")
+    assert _validate_short(definition) == []
+
+    definition["parameters"]["price"]["short"] = "capex"
+    assert any("'capex'" in problem for problem in _validate_short(definition))
+
+    definition["parameters"]["price"]["short"] = "p/q"
+    assert any("letters, digits" in problem for problem in _validate_short(definition))
+
+
+def test_write_and_read_plan(request):
+    """
+    Tests that the plan reads back as it was written
+    """
+    scenarios = plan_scenarios(_plan_definition("grid"))
+    plan_file = write_plan(
+        scenarios, request.config.result_folder_path / "plan" / "scenarios.csv"
+    )
+    assert read_plan(plan_file) == scenarios
+
+
+def test_write_scenario(request):
+    """
+    Tests that a scenario is written to a copy, with its values applied and the
+    base case left as it was
+    """
+    base = _built_case_study(request)
+    carrier_file = base / "period1" / "node_data" / "node1" / "carrier_data"
+    carrier_file = carrier_file / "electricity.csv"
+    frame = pd.read_csv(carrier_file, sep=";", index_col=0)
+    frame["Demand"] = np.linspace(1, 3, len(frame))
+    frame.to_csv(carrier_file, sep=";")
+
+    definition = {
+        "parameters": {
+            "days": {
+                "target": "config",
+                "parameter": "optimization/typicaldays/N",
+                "operation": "set",
+                "values": [4],
+            },
+            "demand": {
+                "target": "carrier_data",
+                "parameter": "Demand",
+                "scope": {"nodes": ["node1"]},
+                "operation": "set",
+                "aggregate": "mean",
+                "values": [10],
+            },
+        }
+    }
+    scenario = {"name": "a", "label": "a", "values": {"days": 4, "demand": 10}}
+    folder = request.config.result_folder_path / "scenario"
+    input_path = write_scenario(
+        base, definition, scenario, folder / "input", folder / "results"
+    )
+
+    with open(input_path / "ConfigModel.json", "r") as json_file:
+        config = json.load(json_file)
+    assert config["optimization"]["typicaldays"]["N"]["value"] == 4
+    assert config["reporting"]["case_name"]["value"] == "a"
+
+    written = pd.read_csv(
+        input_path / carrier_file.relative_to(base), sep=";", index_col=0
+    )
+    assert written["Demand"].mean() == pytest.approx(10)
+    # The shape is kept, only the level moves
+    assert written["Demand"].iloc[-1] / written["Demand"].iloc[0] == pytest.approx(3)
+
+    base_frame = pd.read_csv(carrier_file, sep=";", index_col=0)
+    assert base_frame["Demand"].mean() == pytest.approx(2)
+
+
+def test_collect_results_leaves_out_what_is_not_solved(request):
+    """
+    Tests that the table holds the solved scenarios only, with their values and
+    how they ended
+    """
+    folder = request.config.result_folder_path / "collect"
+    scenarios = plan_scenarios(_plan_definition("list"))
+    write_plan(scenarios, folder / "scenarios.csv")
+
+    done = folder / "done" / f"{scenarios[0]['name']}.json"
+    done.parent.mkdir(parents=True)
+    with open(done, "w") as json_file:
+        json.dump({"termination": "optimal", "wall_s": 1.0, "threads": 1}, json_file)
+
+    table = collect_results(folder, folder / "summary.csv")
+    assert list(table["name"]) == [scenarios[0]["name"]]
+    assert table["price"].iloc[0] == 100
+    assert table["termination"].iloc[0] == "optimal"
+    assert (folder / "summary.csv").exists()

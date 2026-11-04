@@ -638,13 +638,39 @@ def initialize_scenario_analysis_template() -> dict:
             },
             "naming": {
                 "description": "How a scenario is named, which is also the name "
-                "of the folder its results go to. readable spells out the "
-                "parameters that differ from the base case, which stays short "
-                "only if few parameters change. hashed numbers the scenarios and "
-                "appends a hash of their parameters, which is what a sample over "
-                "many parameters needs.",
-                "options": ["readable", "hashed"],
-                "value": "readable",
+                "of the folder its results go to. short spells every parameter "
+                "by its 'short' alias and its value (h2p-0.75__gam-0.5), and a "
+                "parameter without an alias by its name. readable spells every "
+                "parameter by its full name, which fits only where paths may be "
+                "long. hashed is a hash of the values, which is what a sample over "
+                "many parameters needs. The full label is kept in scenarios.csv "
+                "whatever the choice.",
+                "options": ["short", "readable", "hashed"],
+                "value": "short",
+            },
+        },
+        "resources": {
+            "output_folder": {
+                "description": "Folder the analysis folder is created in. Empty "
+                "puts it next to the case study.",
+                "value": "",
+            },
+            "cores": {
+                "description": "Cores all scenarios may use together.",
+                "value": 4,
+            },
+            "memory_gb": {
+                "description": "Memory all scenarios may use together, in GB.",
+                "value": 8,
+            },
+            "threads_per_scenario": {
+                "description": "Gurobi threads of one scenario.",
+                "value": 1,
+            },
+            "memory_per_scenario_mb": {
+                "description": "Memory one scenario asks for, in MB. Doubled and "
+                "tripled when a scenario is retried.",
+                "value": 1500,
             },
         },
         # Parameters that exist in the input data folder. Run
@@ -654,6 +680,7 @@ def initialize_scenario_analysis_template() -> dict:
         #
         #     "<name>": {
         #         "description": "...",
+        #         "short": "gasp",
         #         "target": "carrier_data",
         #         "parameter": "Import price",
         #         "scope": {"carriers": ["naturalgas"]},
@@ -670,6 +697,7 @@ def initialize_scenario_analysis_template() -> dict:
         #     "<name>": {
         #         "description": "...",
         #         "symbols": {"total_demand_TWh": {"description": "...",
+        #                                          "short": "dem",
         #                                          "values": [5, 10, 15]}},
         #         "aggregate": "mean",
         #         "defines": ["sum(Demand[hydrogen, n] for n in nodes) == "

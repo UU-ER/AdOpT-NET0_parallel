@@ -1,0 +1,87 @@
+"""
+Solves the scenarios of a scenario analysis in parallel. Started by
+ScenarioHub.run from the analysis folder, so every path below is relative to it.
+
+- prepare: writes the input data of one scenario, deleted once it is solved
+- solve: solves one scenario and writes done/<scenario>.json when it finishes
+- collect: one table of all scenarios
+
+Configuration, passed with --config: base (input data folder of the case study),
+threads (gurobi threads per scenario) and mem_mb (memory per scenario).
+"""
+
+import os
+import sys
+from pathlib import Path
+
+# adopt may be used from the repository rather than installed. The solve jobs
+# start in the analysis folder, so they are given the repository as well
+REPOSITORY = str(Path(workflow.basedir).parents[1])
+sys.path.insert(0, REPOSITORY)
+os.environ["PYTHONPATH"] = os.pathsep.join(
+    [REPOSITORY] + [path for path in [os.environ.get("PYTHONPATH")] if path]
+)
+
+from adopt_net0.scenario_analysis import (
+    collect_results,
+    read_definition,
+    read_plan,
+    write_scenario,
+)
+
+# Set before the numerical libraries of a solve are imported, else each solve
+# starts a thread pool per core of the machine (stage 17)
+for variable in ["OMP_NUM_THREADS", "OPENBLAS_NUM_THREADS", "MKL_NUM_THREADS"]:
+    os.environ[variable] = "1"
+
+BASE = Path(config["base"])
+THREADS = int(config.get("threads", 1))
+MEM_MB = int(config.get("mem_mb", 1500))
+PYTHON = sys.executable
+
+DEFINITION = read_definition(BASE / "ScenarioAnalysis.json")
+SCENARIOS = {scenario["name"]: scenario for scenario in read_plan("scenarios.csv")}
+
+
+rule all:
+    input:
+        "summary.csv",
+
+
+rule prepare:
+    output:
+        temp(directory("inputs/{scenario}")),
+    run:
+        write_scenario(
+            BASE,
+            DEFINITION,
+            SCENARIOS[wildcards.scenario],
+            output[0],
+            Path("results") / wildcards.scenario,
+        )
+
+
+rule solve:
+    input:
+        "inputs/{scenario}",
+    output:
+        "done/{scenario}.json",
+    log:
+        "logs/{scenario}.log",
+    threads: THREADS
+    # More memory on every retry
+    resources:
+        mem_mb=lambda wildcards, attempt: MEM_MB * attempt,
+    retries: 2
+    shell:
+        '"{PYTHON}" -m adopt_net0.scenario_analysis.solve_scenario "{input}" "{output}" '
+        '--threads {threads} > "{log}" 2>&1'
+
+
+rule collect:
+    input:
+        expand("done/{scenario}.json", scenario=SCENARIOS),
+    output:
+        "summary.csv",
+    run:
+        collect_results(".", output[0])

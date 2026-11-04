@@ -162,3 +162,6 @@ Playground.py
 case_studies_benchmark/inputData/
 case_studies_benchmark/results/
 case_studies_benchmark/reading_profiles/
+
+# Snakemake bookkeeping of the scenario analysis runs
+.snakemake/

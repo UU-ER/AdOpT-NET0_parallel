@@ -12,7 +12,8 @@ authors = [
 readme = "README.md"
 license = "MIT"
 include = [
-  { path = "adopt_net0/scenario_analysis/*.html", format = ["sdist", "wheel"] },
+  { path = "adopt_net0/scenario_analysis/templates/*.html", format = ["sdist", "wheel"] },
+  { path = "adopt_net0/scenario_analysis/Snakefile", format = ["sdist", "wheel"] },
 ]
 homepage = "https://github.com/UU-ER/AdOpT-NET0"
 repository = "https://github.com/UU-ER/AdOpT-NET0"

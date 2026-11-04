@@ -414,6 +414,7 @@ function starter() {
     name: DATA.case_name + "_analysis",
     combination: "grid",
     samples: 100,
+    naming: "short",
     direct: [],
     derived: []
   };
@@ -607,7 +608,14 @@ function buildJSON() {
       combination: { description: "How the values of the parameters are combined into scenarios.", options: ["grid", "list", "lhs"], value: S.combination },
       n_samples: { description: "Number of scenarios drawn if combination is lhs. Ignored otherwise.", value: Number(S.samples) || 100 },
       seed: { description: "Seed of the sampler, so that an analysis that is run again gives the same scenarios.", value: 42 },
-      naming: { description: "How a scenario is named, which is also the name of the folder its results go to.", options: ["readable", "hashed"], value: "readable" }
+      naming: { description: "How a scenario is named, which is also the name of the folder its results go to. short spells every parameter by its 'short' alias and its value, readable by its full name, hashed is a hash of the values. The full label is kept in scenarios.csv whatever the choice.", options: ["short", "readable", "hashed"], value: S.naming || "short" }
+    },
+    resources: {
+      output_folder: { description: "Folder the analysis folder is created in. Empty puts it next to the case study.", value: "" },
+      cores: { description: "Cores all scenarios may use together.", value: 4 },
+      memory_gb: { description: "Memory all scenarios may use together, in GB.", value: 8 },
+      threads_per_scenario: { description: "Gurobi threads of one scenario.", value: 1 },
+      memory_per_scenario_mb: { description: "Memory one scenario asks for, in MB. Doubled and tripled when a scenario is retried.", value: 1500 }
     },
     parameters: {},
     derived: {}
@@ -620,6 +628,7 @@ function buildJSON() {
       target: d.target,
       parameter: d.parameter
     };
+    if (d.short) p.short = d.short;
     if (d.scope && Object.keys(d.scope).length) p.scope = d.scope;
     p.operation = d.operation;
     p.values = parseValues(d.values).map(coerce);
@@ -631,6 +640,7 @@ function buildJSON() {
     (b.symbols || []).forEach(s => {
       if (!s.name) return;
       symbols[s.name] = { description: s.name, values: parseValues(s.values).map(coerce) };
+      if (s.short) symbols[s.name].short = s.short;
     });
     out.derived[b.name] = {
       description: "Defined by the equations below.",
@@ -818,7 +828,8 @@ function renderAnalysis() {
   host.append(
     field("name of the analysis", input(S.name, v => { S.name = v; sync(); }), "grow"),
     field("combination", select(["grid", "list", "lhs"], S.combination, v => { S.combination = v; renderAll(); })),
-    field("samples (lhs only)", input(S.samples, v => { S.samples = v; sync(); }))
+    field("samples (lhs only)", input(S.samples, v => { S.samples = v; sync(); })),
+    field("scenario names", select(["short", "readable", "hashed"], S.naming || "short", v => { S.naming = v; renderAll(); }))
   );
 }
 
@@ -932,6 +943,7 @@ function renderDirect() {
     fields.className = "fields";
     fields.append(
       field("name in the analysis", input(d.key, v => { d.key = v; sync(); })),
+      field("short", input(d.short || "", v => { d.short = v.trim(); sync(); }, "h2p")),
       field("operation", select(["set", "multiply"], d.operation, v => {
         d.operation = v;
         d.values = suggestedValues(entry, v);
@@ -1008,6 +1020,7 @@ function renderDerived() {
       row.className = "sym";
       row.append(
         field("symbol", input(s.name, v => { s.name = v; sync(); refreshVerdict(card, b); }), "grow"),
+        field("short", input(s.short || "", v => { s.short = v.trim(); sync(); }, "dem")),
         field("values", input(s.values, v => { s.values = v; sync(); }, "5, 10, 15"), "grow")
       );
       const del = document.createElement("button");

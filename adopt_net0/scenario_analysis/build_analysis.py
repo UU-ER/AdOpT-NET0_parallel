@@ -1,31 +1,8 @@
 """
-Reads an input data folder and lists the parameters a scenario analysis can
-change.
-
-A scenario analysis starts from one base case that has already been built, and
-every scenario is that base case with a few values changed. So the question the
-user has to answer first is what can be changed at all, and that question is
-answered by the input data folder itself: the configuration file carries its own
-descriptions and options, the carrier data files have a fixed set of columns,
-and the technology and network files are json trees whose leaves are values.
-
-This module walks all of that and returns one entry per parameter. The entries
-are what a user interface offers to choose from, and they are also what the
-definition of a scenario analysis is checked against, so that a parameter that
-does not exist is caught before anything is run rather than after.
-
-A parameter is listed at the widest scope it has, not once per node and
-carrier. A carrier data column exists for every node and every investment
-period, and a scenario that does not say otherwise changes all of them, which
-is the same convention ``fill_carrier_data`` follows with its empty selectors.
-The ``scope`` of an entry lists what it can be narrowed to.
-
-Examples::
-
-    from adopt_net0.scenario_analysis import scan_input_data
-
-    catalogue = scan_input_data("path to input data")
-    prices = [entry for entry in catalogue if "price" in entry["parameter"]]
+Lists every parameter of an input data folder that a scenario analysis can
+change (the catalogue), and writes ScenarioBuilder.html, a page to search the
+catalogue and put an analysis together. A parameter is listed once at its widest
+scope, and its scope says what it can be narrowed to.
 """
 
 import json
@@ -36,12 +13,21 @@ import numpy as np
 import pandas as pd
 
 from ..data_preprocessing.data_loading import CARRIER_COLUMNS
+from .utilities import INDEX_SETS, carrier_data_file, component_folders, read_topology
 
 log = logging.getLogger(__name__)
 
 # Keys of a technology or network file that are prose rather than values. They
 # are skipped so that the catalogue only offers things that can be varied
 SKIPPED_KEYS = ["comment"]
+
+TEMPLATE_FILE = Path(__file__).parent / "templates" / "scenario_builder.html"
+
+# The template carries an empty set of data between these two markers, which is
+# what keeps it valid javascript on its own. Everything between them, the markers
+# included, is replaced by the data of one case study
+PLACEHOLDER = "/*__ADOPT_DATA__*/"
+END_PLACEHOLDER = "/*__END_DATA__*/"
 
 
 def scan_input_data(folder_path: str | Path) -> list:
@@ -54,7 +40,7 @@ def scan_input_data(folder_path: str | Path) -> list:
     while a case study is still being built.
 
     :param str/Path folder_path: path to the folder containing the case study data
-    :return: list of parameter entries, see the module docstring
+    :return: list of parameter entries
     :rtype: list
     """
     folder_path = Path(folder_path)
@@ -66,8 +52,7 @@ def scan_input_data(folder_path: str | Path) -> list:
             "data folder of a case study"
         )
 
-    with open(topology_file, "r") as json_file:
-        topology = json.load(json_file)
+    topology = read_topology(folder_path)
 
     catalogue = []
     catalogue += _scan_configuration(folder_path)
@@ -102,6 +87,61 @@ def write_catalogue(folder_path: str | Path, save_path: str | Path = None) -> li
 
     log.info(f"Catalogue written to {save_path}")
     return catalogue
+
+
+def write_builder(folder_path: str | Path, save_path: str | Path = None) -> Path:
+    """
+    Writes the scenario builder of a case study to an html file.
+
+    The catalogue is read from the case study and put inside the page, so the
+    file that comes out is self contained and belongs to that case study only.
+    Scanning the folder again and writing it again is how the page is kept up to
+    date after the case study changes.
+
+    :param str/Path folder_path: path to the folder containing the case study data
+    :param str/Path save_path: file the page is written to, by default
+        ScenarioBuilder.html inside the input data folder
+    :return: path of the page that was written
+    :rtype: Path
+    """
+    folder_path = Path(folder_path)
+
+    topology = read_topology(folder_path)
+
+    data = {
+        "catalogue": scan_input_data(folder_path),
+        "topology": {key: topology.get(key, []) for key in INDEX_SETS},
+        "case_name": folder_path.name,
+    }
+
+    with open(TEMPLATE_FILE, "r", encoding="utf-8") as html_file:
+        page = html_file.read()
+
+    start = page.find(PLACEHOLDER)
+    end = page.find(END_PLACEHOLDER)
+    if start < 0 or end < start:
+        raise ValueError(
+            f"{TEMPLATE_FILE.name} has no {PLACEHOLDER} ... {END_PLACEHOLDER} for "
+            "the data of the case study"
+        )
+
+    # A parameter whose name contains the end of a script tag would otherwise
+    # close the script the data sits in
+    encoded = json.dumps(data, default=str).replace("</", "<\\/")
+    page = page[:start] + encoded + page[end + len(END_PLACEHOLDER) :]
+
+    if save_path is None:
+        save_path = folder_path / "ScenarioBuilder.html"
+    save_path = Path(save_path)
+
+    with open(save_path, "w", encoding="utf-8") as html_file:
+        html_file.write(page)
+
+    log.info(
+        f"Scenario builder of '{folder_path.name}' written to {save_path}, "
+        f"{len(data['catalogue'])} parameters"
+    )
+    return save_path
 
 
 def _scan_configuration(folder_path: Path) -> list:
@@ -176,7 +216,7 @@ def _scan_topology(topology: dict) -> list:
     :rtype: list
     """
     entries = []
-    for key in ["nodes", "carriers", "investment_periods"]:
+    for key in INDEX_SETS:
         entries.append(
             {
                 "parameter": f"topology/{key}",
@@ -220,14 +260,7 @@ def _scan_carrier_data(folder_path: Path, topology: dict) -> list:
         frames = {}
         for period in periods:
             for node in nodes:
-                file_path = (
-                    folder_path
-                    / period
-                    / "node_data"
-                    / node
-                    / "carrier_data"
-                    / f"{carrier}.csv"
-                )
+                file_path = carrier_data_file(folder_path, period, node, carrier)
                 if file_path.exists():
                     frames[(period, node)] = pd.read_csv(
                         file_path, sep=";", index_col=0
@@ -308,7 +341,6 @@ def _scan_technologies(folder_path: Path, topology: dict) -> list:
         folder_path,
         topology,
         target="technology",
-        sub_folder="technology_data",
         per_node=True,
     )
 
@@ -329,7 +361,6 @@ def _scan_networks(folder_path: Path, topology: dict) -> list:
         folder_path,
         topology,
         target="network",
-        sub_folder="network_data",
         per_node=False,
     )
 
@@ -338,7 +369,6 @@ def _scan_component_files(
     folder_path: Path,
     topology: dict,
     target: str,
-    sub_folder: str,
     per_node: bool,
 ) -> list:
     """
@@ -349,8 +379,7 @@ def _scan_component_files(
 
     :param Path folder_path: path to the folder containing the case study data
     :param dict topology: contents of the topology file
-    :param str target: which writer applies these parameters
-    :param str sub_folder: folder the files sit in, below the period or the node
+    :param str target: technology or network
     :param bool per_node: True if the files sit below a node, False if below the
         investment period
     :return: list of parameter entries
@@ -364,23 +393,15 @@ def _scan_component_files(
     found = {}
     contents = {}
 
-    for period in periods:
-        places = (
-            [folder_path / period / "node_data" / node / sub_folder for node in nodes]
-            if per_node
-            else [folder_path / period / sub_folder]
-        )
-        labels = [f"{period}/{node}" for node in nodes] if per_node else [period]
-
-        for place, label in zip(places, labels):
-            if not place.is_dir():
-                continue
-            for file_path in sorted(place.glob("*.json")):
-                name = file_path.stem
-                found.setdefault(name, []).append(label)
-                if name not in contents:
-                    with open(file_path, "r") as json_file:
-                        contents[name] = json.load(json_file)
+    for label, place in component_folders(folder_path, periods, nodes, per_node):
+        if not place.is_dir():
+            continue
+        for file_path in sorted(place.glob("*.json")):
+            name = file_path.stem
+            found.setdefault(name, []).append(label)
+            if name not in contents:
+                with open(file_path, "r") as json_file:
+                    contents[name] = json.load(json_file)
 
     entries = []
     for name in sorted(found):
