@@ -144,6 +144,25 @@ def write_builder(folder_path: str | Path, save_path: str | Path = None) -> Path
     return save_path
 
 
+def create_scenario_builder(path: str | Path) -> Path:
+    """
+    Writes the parameter catalogue and the builder page of a case study into its
+    input data folder. The page defines the analysis: its json is saved as
+    ScenarioAnalysis.json in the same folder, where ScenarioHub reads it.
+
+    :param str/Path path: input data folder of the case study
+    :return: path of the page that was written
+    :rtype: Path
+    """
+    write_catalogue(path)
+    page = write_builder(path)
+
+    log_msg = f"--- Builder page written to {page} ---"
+    print(log_msg)
+    log.info(log_msg)
+    return page
+
+
 def _scan_configuration(folder_path: Path) -> list:
     """
     Lists the parameters of the model configuration file.

@@ -3,7 +3,6 @@ import subprocess
 import sys
 from pathlib import Path
 
-from .build_analysis import write_builder, write_catalogue
 from .define_analysis import read_definition, validate_definition
 from .handle_results import collect_results
 from .plan_analysis import plan_scenarios, write_plan
@@ -27,8 +26,9 @@ class ScenarioHub:
     Class to run a scenario analysis on a case study.
 
     The analysis is defined in ScenarioAnalysis.json in the input data folder of
-    the case study. The hub plans its scenarios, solves them in parallel with
-    snakemake and collects the results into one table. Attributes:
+    the case study, saved from the builder page. The hub plans its scenarios,
+    solves them in parallel with snakemake and collects the results into one
+    table. Attributes:
 
     - self.base_path: input data folder of the case study
     - self.definition: the definition of the analysis
@@ -62,18 +62,6 @@ class ScenarioHub:
         self.analysis_path = (
             output_folder / self.definition["analysis"]["name"]["value"]
         )
-
-    def write_builder(self):
-        """
-        Writes the parameter catalogue of the case study and the builder page to
-        define the analysis with
-        """
-        write_catalogue(self.base_path)
-        page = write_builder(self.base_path)
-
-        log_msg = f"--- Builder page written to {page} ---"
-        print(log_msg)
-        log.info(log_msg)
 
     def check(self):
         """

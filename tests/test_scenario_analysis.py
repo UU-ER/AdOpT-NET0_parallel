@@ -9,6 +9,9 @@ from adopt_net0.data_preprocessing.data_loading import CARRIER_COLUMNS
 from adopt_net0.scenario_analysis import (
     ScenarioHub,
     collect_results,
+    create_scenario_analysis_template,
+    create_scenario_builder,
+    initialize_scenario_analysis_template,
     parse_equations,
     plan_scenarios,
     read_definition,
@@ -179,7 +182,7 @@ def test_scenario_analysis_template(request):
     - read_definition
     """
     data_folder_path = _built_case_study(request)
-    dp.create_scenario_analysis_template(data_folder_path)
+    create_scenario_analysis_template(data_folder_path)
 
     scenario_file = data_folder_path / "ScenarioAnalysis.json"
     assert scenario_file.exists()
@@ -200,7 +203,7 @@ def test_scenario_hub_plans_from_the_definition(request):
     data_folder_path = _built_case_study(request)
     output_folder = request.config.result_folder_path / "hub"
 
-    definition = dp.initialize_scenario_analysis_template()
+    definition = initialize_scenario_analysis_template()
     definition["analysis"]["name"]["value"] = "days"
     definition["resources"]["output_folder"]["value"] = str(output_folder)
     definition["parameters"]["days"] = {
@@ -404,6 +407,22 @@ def test_write_builder(request):
 
     # The data sits inside a script tag, so nothing in it may close one
     assert "</script" not in page[start:end]
+
+
+
+def test_create_scenario_builder(request):
+    """
+    Tests that create_scenario_builder writes the catalogue and the page into the
+    input data folder, without a definition being there yet
+    """
+    data_folder_path = _built_case_study(request)
+    assert not (data_folder_path / "ScenarioAnalysis.json").exists()
+
+    page_path = create_scenario_builder(data_folder_path)
+
+    assert page_path == data_folder_path / "ScenarioBuilder.html"
+    assert page_path.exists()
+    assert (data_folder_path / "ParameterCatalogue.json").exists()
 
 
 def _plan_definition(combination: str, naming: str = "readable") -> dict:

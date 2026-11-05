@@ -385,3 +385,136 @@ def _suggestion(identifier: str, known: dict) -> str:
     return (
         ". Did you mean " + ", ".join(f"'{name}'" for name in sorted(close)[:5]) + "?"
     )
+
+
+def initialize_scenario_analysis_template() -> dict:
+    """
+    Creates a scenario analysis template and returns it as a dict
+
+    :return: scenario_analysis_template
+    :rtype: dict
+    """
+    scenario_analysis_template = {
+        "analysis": {
+            "name": {
+                "description": "Name of the scenario analysis. The results of "
+                "every scenario are written to a folder of this name.",
+                "value": "scenario_analysis",
+            },
+            "combination": {
+                "description": "How the values of the parameters are combined "
+                "into scenarios. grid is every combination of every value, list "
+                "takes the values element by element so that every parameter "
+                "needs the same number of them, lhs draws a Latin hypercube "
+                "sample of the space the values span.",
+                "options": ["grid", "list", "lhs"],
+                "value": "grid",
+            },
+            "n_samples": {
+                "description": "Number of scenarios drawn if combination is lhs. "
+                "Ignored otherwise.",
+                "value": 100,
+            },
+            "seed": {
+                "description": "Seed of the sampler, so that an analysis that is "
+                "run again gives the same scenarios.",
+                "value": 42,
+            },
+            "naming": {
+                "description": "How a scenario is named, which is also the name "
+                "of the folder its results go to. short spells every parameter "
+                "by its 'short' alias and its value (h2p-0.75__gam-0.5), and a "
+                "parameter without an alias by its name. readable spells every "
+                "parameter by its full name, which fits only where paths may be "
+                "long. hashed is a hash of the values, which is what a sample over "
+                "many parameters needs. The full label is kept in scenarios.csv "
+                "whatever the choice.",
+                "options": ["short", "readable", "hashed"],
+                "value": "short",
+            },
+        },
+        "resources": {
+            "output_folder": {
+                "description": "Folder the analysis folder is created in. Empty "
+                "puts it next to the case study.",
+                "value": "",
+            },
+            "cores": {
+                "description": "Cores all scenarios may use together.",
+                "value": 4,
+            },
+            "memory_gb": {
+                "description": "Memory all scenarios may use together, in GB.",
+                "value": 8,
+            },
+            "threads_per_scenario": {
+                "description": "Gurobi threads of one scenario.",
+                "value": 1,
+            },
+            "memory_per_scenario_mb": {
+                "description": "Memory one scenario asks for, in MB. Doubled and "
+                "tripled when a scenario is retried.",
+                "value": 1500,
+            },
+        },
+        # Parameters that exist in the input data folder. Run
+        # adopt_net0.scenario_analysis.write_catalogue on the case study to see
+        # which ones there are, what they currently hold, and what they can be
+        # narrowed to. An entry is
+        #
+        #     "<name>": {
+        #         "description": "...",
+        #         "short": "gasp",
+        #         "target": "carrier_data",
+        #         "parameter": "Import price",
+        #         "scope": {"carriers": ["naturalgas"]},
+        #         "operation": "set",
+        #         "values": [20, 40, 60]
+        #     }
+        #
+        # A parameter that names no scope changes everywhere it exists, which is
+        # the convention the writers of the input data follow
+        "parameters": {},
+        # Quantities of the study that do not exist in the input data, defined by
+        # equations that relate them to parameters that do. An entry is
+        #
+        #     "<name>": {
+        #         "description": "...",
+        #         "symbols": {"total_demand_TWh": {"description": "...",
+        #                                          "short": "dem",
+        #                                          "values": [5, 10, 15]}},
+        #         "aggregate": "mean",
+        #         "defines": ["sum(Demand[hydrogen, n] for n in nodes) == "
+        #                     "total_demand_TWh * 1e6 / 8760"],
+        #         "checks": []
+        #     }
+        #
+        # The equations have to determine the parameters they write, so a split
+        # that the study leaves open is reported rather than silently assumed
+        "derived": {},
+    }
+
+    return scenario_analysis_template
+
+
+def create_scenario_analysis_template(path: Path | str):
+    """
+    Creates an exemplary scenario analysis json file in the specified path.
+
+    The file belongs in the input data folder of the case study, where
+    ScenarioHub reads it. The builder page written by create_scenario_builder is
+    the easier way to define one.
+
+    :param str/Path path: input data folder of the case study
+    """
+    if isinstance(path, str):
+        path = Path(path)
+
+    scenario_file = path / "ScenarioAnalysis.json"
+
+    if scenario_file.exists():
+        print(f"File already exists: {scenario_file}")
+        return
+
+    with open(scenario_file, "w") as f:
+        json.dump(initialize_scenario_analysis_template(), f, indent=4)

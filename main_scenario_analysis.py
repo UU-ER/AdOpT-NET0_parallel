@@ -1,19 +1,16 @@
-import adopt_net0.data_preprocessing as dp
-from adopt_net0.scenario_analysis import ScenarioHub
+from adopt_net0.scenario_analysis import ScenarioHub, create_scenario_builder
 
 # Specify the path to the input data of a case study that is already built
 path = "case_studies_benchmark/inputData/nl_node_demo/nl_node"
 
-# Create the scenario analysis template (comment this line if already defined)
-#dp.create_scenario_analysis_template(path)
+# Write the builder page to define the analysis with (comment this line if already
+# defined). Open ScenarioBuilder.html in the input data folder and save its json
+# as ScenarioAnalysis.json in the same folder
+create_scenario_builder(path)
 
-# Read the scenario analysis and write the builder page to define it with
-# (open ScenarioBuilder.html in the input data folder)
+# Read the scenario analysis, check it and plan the scenarios
 analysis = ScenarioHub()
 analysis.read_definition(path)
-analysis.write_builder()
-
-# Check the definition and plan the scenarios
 analysis.plan()
 
 # Solve the scenarios in parallel (run again to continue after an interruption)
